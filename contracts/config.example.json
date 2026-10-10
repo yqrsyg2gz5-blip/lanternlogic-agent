@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8642
+  },
+  "model": {
+    "provider": "mock",
+    "model_name": "deepseek-chat",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "temperature": 0.7,
+    "max_tokens": 8192,
+    "max_iterations": 60,
+    "max_context_tokens": 65536
+  },
+  "executor": {
+    "type": "local",
+    "workspace_root": "./workspace",
+    "allowed_dirs": [
+      "./workspace"
+    ],
+    "approval_required": [
+      "rm",
+      "del",
+      "rmdir",
+      "rd",
+      "erase",
+      "format",
+      "reg",
+      "remove-item"
+    ],
+    "sandbox": "docker",
+    "timeout_seconds": 60,
+    "search_url": "https://www.bing.com/search",
+    "browser_channel": "msedge",
+    "comfyui_url": "http://127.0.0.1:8189",
+    "image_checkpoint": "Juggernaut-XL_v9.safetensors",
+    "shell": "",
+    "sandbox_image": "python:3.12-slim"
+  },
+  "storage": {
+    "type": "fs",
+    "data_dir": "./data"
+  },
+  "skills": {
+    "skills_dir": "./skills"
+  },
+  "ui": {
+    "language": "zh-CN",
+    "theme": "dark"
+  }
+}

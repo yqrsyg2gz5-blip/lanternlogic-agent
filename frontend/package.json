@@ -1,0 +1,31 @@
+{
+  "name": "lanternlogic-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "LanternLogic Agent —— 本地智能体前端（Manus 平替研究实现，Mock 事件流驱动）",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^1.49.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsqr": "^1.4.0",
+    "playwright-core": "^1.63.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  },
+  "license": "AGPL-3.0-only"
+}

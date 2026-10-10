@@ -1,0 +1,49 @@
+# LanternLogic Agent 评测任务集（给 `scripts/eval_suite.py` 用）
+#
+# ★ 为什么要有这个文件：
+#   Manus 2.0 发布时能报出「比上一版省 23.2% token、快 28.2%、便宜 32%」——
+#   那是**引擎级 A/B** 的结果，靠的就是一套固定任务 + 统一打分。
+#   我们此前只有"真跑一轮看看"，说不出这种话（凭感觉 ✗）。
+#   这份任务集就是我们的**尺子**：改动前后各跑一遍，比数字 ✓。
+#
+# ★ 设计原则：
+#   1. **小**：每个任务几分钟、几毛钱（跑一轮整套 ≈ ¥1–3）✓ 这样才跑得起、跑得勤 ✓
+#   2. **像真实用法**：覆盖"写东西 / 改东西 / 多文件 / 交付形态"四类 ✓
+#   3. **可判定**：成功标准写在任务里（群里会按「交付小节」和「项目验收」判 ✓）
+#
+# 用法：
+#   python scripts/eval_suite.py                 # 跑全部
+#   python scripts/eval_suite.py --only smoke-python
+#   python scripts/eval_suite.py --tag before-fix   # 结果带上标签，方便 A/B
+#
+[
+  {
+    "id": "smoke-python",
+    "title": "单文件 Python 小工具（最小闭环）",
+    "size": "smoke",
+    "mode": "leader",
+    "goal": "写一个 `wordcount.py`：读一个文本文件，输出「行数/词数/字符数」，命令行用法 `python wordcount.py <文件>`。顺手写一个 `test_wordcount.py` 并真跑一遍。做完在交付里写清「改动文件」和「自测命令」。"
+  },
+  {
+    "id": "fix-bug",
+    "title": "修一个给定的 bug（改东西 + 真跑自测）",
+    "size": "smoke",
+    "mode": "leader",
+    "setup": "把下面这个有 bug 的文件写进群工作区，文件名 `calc.py`：\n```python\n# 计算器：支持加减乘除；除零应返回错误提示而不是崩\ndef calc(a, op, b):\n    if op == '+':\n        return a + b\n    if op == '-':\n        return a - b\n    if op == '*':\n        return a * b\n    if op == '/':\n        return a / b          # ← 除零会直接抛异常\n    return None\n```\n",
+    "goal": "`calc.py` 里有个 bug：除零会直接崩（应该返回一个错误提示）。请修好它，并写一个 `test_calc.py` 真跑一遍证明修好了。交付里必须写「改动文件」和「自测命令」，并贴出真实运行结果。"
+  },
+  {
+    "id": "web-single-file",
+    "title": "单文件网页（交付形态：双击就能用）",
+    "size": "small",
+    "mode": "leader",
+    "goal": "做一个**单文件网页** `index.html`：一个计数器（点一下加一，有个清零按钮，刷新后数字还在）。要求：自包含、不引外部 CDN、双击就能用。交付里必须有一节「怎么打开」，写清怎么用它。"
+  },
+  {
+    "id": "multi-file-tool",
+    "title": "多文件小工具（模块划分 + README）",
+    "size": "small",
+    "mode": "leader",
+    "goal": "做一个小工具 `notes/`：`store.py`（用 JSON 文件存笔记：增/删/查）、`cli.py`（命令行 add/list/rm）、`README.md`（怎么用）。写 `test_notes.py` 真跑一遍。交付里写清「改动文件」「自测命令」和「怎么打开」。"
+  }
+]
