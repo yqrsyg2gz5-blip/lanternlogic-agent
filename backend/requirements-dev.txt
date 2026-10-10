@@ -1,0 +1,20 @@
+# 开发/测试依赖（CI 与本地都要装 ✓）
+#
+# 用法：
+#     pip install -r backend/requirements-dev.txt
+#
+# ★ 为什么要单开一份（2026-10-09，CI 第三次实跑才暴露 ✗）：
+#   requirements.txt 是**运行依赖** ✓ 而测试要用的 pytest / pytest-asyncio / pyflakes
+#   **从来没写进任何文件** ✗ —— 本地开发机上是手动装的 ✓ 所以一直没露馅 ✓
+#   一上 CI（干净环境）就报 `No module named pytest` ✗
+#   ⇒ 这就是"本地能跑 ≠ 别人能跑" ✓ 也正是 CI 存在的意义 ✓
+#
+# ★ pytest-asyncio 是**必须**的（不是可选）：
+#   backend/pytest.ini 里 `asyncio_mode = auto` ✓ 缺它 ⇒ async 测试**成片**报错 ✗
+
+-r requirements.txt
+
+pytest>=8
+pytest-asyncio>=0.24
+pyflakes>=3
+playwright>=1.40

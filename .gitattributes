@@ -1,0 +1,16 @@
+# 换行符策略：Windows 批处理必须 CRLF（HANDOVER §7.27：LF 会把 bat 行粘碎）
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制（禁止换行转换）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary
+*.ico binary
+*.safetensors binary

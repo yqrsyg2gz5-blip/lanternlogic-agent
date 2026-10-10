@@ -1,0 +1,71 @@
+# ---- 依赖与构建产物 ----
+node_modules/
+dist/
+.vite/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# ---- 运行时数据（不随仓库分发：含个人路径与任务产物）----
+config.json
+data/
+workspace/
+
+# ---- 本地环境与密钥（Key 只存环境变量名，值绝不落盘）----
+.env
+
+# ---- 施工残骸：移到本地 _attic/ 保留，但不入库 ----
+_attic/
+/mini*.bat
+/backend/.smoke_*
+/backend/*.wav
+/backend/*.mp3
+
+# Tauri build artifacts (1.08 GB / 3020 files)
+desktop/src-tauri/target/
+desktop/node_modules/
+desktop/src-tauri/gen/
+backend/_dbg_*.png
+backend/_patch_*.py
+backend/exam_result.json
+backend/hard_exam*.json
+backend/zero_gacha_test.json
+dist_test/
+build_test/
+
+# ---- 运行日志（重启脚本产生，含启动输出，不入库）----
+*_restart.log
+backend_restart.log
+vite_restart.logconfig.json.before_restore_*
+config.json.*.bak
+
+# ★ 2026-10-08：Tauri 打包用的后端 exe —— **不进仓库** ✗
+#   体积 62.79MB ✓ 每次重编都变 ✓ 进了仓库就是每次提交翻倍涨 ✗
+#   ⇒ 发版时挂到 GitHub Release 附件 ✓ 源码仓库只放源码 ✓（文件仍在本地盘上 ✓）
+desktop/src-tauri/bin/
+
+# ★ 2026-10-09（上传前体检）：**模型与编译产物一律不进仓库** ✗
+#   为什么（体检实测抓出来的 ✗）：原来只挡了 data/ 与 dist/ ✓
+#   但模型文件（*.onnx/*.safetensors/*.gguf ✓）和编译产物（*.exe/*.dll ✓）
+#   只要被放到**别的目录**（比如你手滑拖到仓库根 ✓）就会一路传上去 ✗
+#   ⇒ 按**扩展名**兜一道底 ✓（比按目录稳 ✓ 目录会变、扩展名不会 ✓）
+*.onnx
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.bin
+*.exe
+*.dll
+*.so
+*.dylib
+# 打包中间产物
+desktop/src-tauri/bin/
+desktop/src-tauri/target/
+# 评审/临时工具（用户自己的目录 ✓ 不该进仓库 ✓）
+_临时工具/
+*.bak
+*.orig
+# ★ 2026-10-09：本地模型配置备份，不进仓库
+config/_model_backup.json
