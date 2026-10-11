@@ -1,0 +1,15 @@
+LanternLogicAI
+Copyright (C) 2026 丹东振兴云杉互联网服务工作室
+
+本产品包含由第三方开发的软件组件，各组件版权归其各自所有者，
+并按其各自许可证授权使用。
+
+完整的第三方组件清单、版本与其许可证（含一处 LGPL-3.0 的分发注意事项）
+见 THIRD-PARTY.md：
+  <https://github.com/yqrsyg2gz5-blip/lanternlogic-agent/blob/main/THIRD-PARTY.md>
+
+本项目自身以 GNU Affero 通用公共许可证第 3 版（AGPL-3.0-only）授权，
+全文见 LICENSE 文件；商业授权（免除 AGPL 开源义务）见 COMMERCIAL.md。
+
+★ 提示：把上面 yqrsyg2gz5-blip/lanternlogic-agent 换成真实地址 ✓（AGPL 第 13 条要求用网络访问的人
+  能拿到对应源码 ✓ 这一行与 README / 程序"关于"页里的源码地址要一致 ✓）

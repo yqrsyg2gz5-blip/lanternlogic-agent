@@ -1,0 +1,75 @@
+# LanternLogic Agent —— CI 守门（远端兜底）
+#
+# 与本地守门的分工：
+#   · .githooks/pre-commit      提交时快检（语法 + pyflakes + pytest，约 30 秒）
+#   · scripts/check_all.ps1     开发机上的完整门（pytest + 产物新鲜度 + 红绿，约 10 分钟）
+#   · 本文件                    远端兜底（别人 clone / 开 PR 时也跑一遍）
+#
+# ★ 2026-10-09 第一次实跑（仓库上线那天）——**果然是坏的** ✗ 如实记在这儿：
+#   第 5 步 `pytest` **开始和结束在同一秒** ⇒ 命令根本没跑起来 ✓
+#   根因：pwsh 里**以点开头**的相对路径必须写 `./` ✗
+#     写 `.venv/Scripts/python.exe` ⇒ pwsh 当它是"命令名"⇒ 找不到 ⇒ 立刻报错 ✓
+#     （而上面那条 `backend/.venv/Scripts/python.exe` 不以点开头 ⇒ 能跑 ✓ 所以装依赖那步是成功的 ✓
+#       这个不对称正是最难一眼看出的地方 ✓）
+#   ⇒ 这次统一改成**从仓库根写全相对路径**（不带 working-directory ✓ 不用 ./ 也不用反斜杠 ✓）
+#   教训并入本仓那条老规矩：**没跑过的配置 = 坏的配置** ✓（本文件自己第 3 行早就写着"从未实跑过"✓）
+#
+# ★ 第二次实跑（同一小时）又抓到一个 ✗：
+#   我把 pytest 的目标从 "." 改成 "backend" ⇒ 它会去收 **backend/data/ 里任务生成的 test_*.py** ✗
+#     ⇒ 36 个收集错误 ⇒ rc=2 ⇒ **1 秒就挂** ✓（本地照 CI 那行命令原样跑一遍即复现 ✓）
+#   ⇒ 现在显式指到 **backend/tests** ✓ 并带 **-c backend/pytest.ini** ✓
+#     为什么本地不用这么写 ✗：本地 check_all.ps1 是 cd 到 backend 再跑 ✓
+#       靠 pytest.ini 里 testpaths=tests 自动收窄 ✓
+#       而 CI 从仓库根跑 ✓ 不能靠 cwd ⇒ **必须显式给这两个参数** ✓
+
+name: check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 建 venv 并装依赖
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/Scripts/python.exe -m pip install --upgrade pip
+          # ★ 装**开发依赖**（它已经 -r requirements.txt 了 ✓）—— 见 backend/requirements-dev.txt
+          #   第三轮实跑前这里只装运行依赖 ⇒ "No module named pytest" ✗
+          backend/.venv/Scripts/python.exe -m pip install -r backend/requirements-dev.txt
+
+      - name: pytest（全量）
+        run: backend/.venv/Scripts/python.exe -m pytest -c backend/pytest.ini backend/tests -o addopts= -p no:cacheprovider
+
+      - name: pyflakes
+        run: backend/.venv/Scripts/python.exe -m pyflakes backend/app backend/tests scripts
+
+      - name: 前端类型检查（tsc）
+        run: |
+          cd frontend
+          npm ci --no-audit --no-fund
+          node node_modules/typescript/bin/tsc --noEmit
+
+      - name: 红绿（要求干净树；CI 里 checkout 后天然干净）
+        run: backend/.venv/Scripts/python.exe scripts/redgreen_check.py
+
+      - name: 红绿日志留档
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redgreen-log
+          path: ${{ runner.temp }}/redgreen-*
+          if-no-files-found: ignore

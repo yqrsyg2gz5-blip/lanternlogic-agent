@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全问题（请走私信 ✗ 别开公开 Issue）
+    url: https://github.com/yqrsyg2gz5-blip/lanternlogic-agent/blob/main/SECURITY.md
+    about: 漏洞怎么报、多久回你 ✓
+  - name: 商业授权（闭源集成 / SaaS 不开源 / OEM）
+    url: https://github.com/yqrsyg2gz5-blip/lanternlogic-agent/blob/main/COMMERCIAL.md
+    about: AGPL 之外想闭源商用，看这里 ✓

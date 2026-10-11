@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx>=0.27
+pydantic>=2.9
+# /voice 端点用 request.form() 解析 multipart，缺它必 500（此前未声明）
+python-multipart>=0.0.9
+# license.py Ed25519 验签（K1 整改：HMAC 对称密钥 → 非对称，产品只内置公钥）
+cryptography>=42

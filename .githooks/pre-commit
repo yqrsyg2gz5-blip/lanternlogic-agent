@@ -1,0 +1,65 @@
+#!/bin/sh
+# LanternLogic Agent —— 提交前快检（「守门」的快通道）
+#
+# 设计取舍（重要，别改成"什么都跑"）：
+#   · 钩子里只做【几十秒内能完成】的检查：变更文件的语法自检 + pyflakes + 全量 pytest（约 30 秒）。
+#   · 完整门（含 55 组红绿，约 9 分钟）走 scripts/check_all.ps1 —— 红绿**要求干净树**，
+#     而提交那一刻树必然是脏的，把红绿塞进钩子只会永远失败，最后被人 --no-verify 绕过。
+#   · 宁可每次多等 30 秒：2026-10-04 已经吃过两次"提交完才发现坏了"的亏（一次修得不全、
+#     一次改注释打断两组回归锚点），两次都是手工跑全量才发现的。
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+PY="$ROOT/backend/.venv/Scripts/python.exe"
+[ -x "$PY" ] || PY="$ROOT/backend/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+  echo "[pre-commit] 找不到 venv python，跳过检查（不阻断提交）"
+  exit 0
+fi
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACM)"
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+PY_FILES="$(printf '%s\n' "$STAGED" | grep -E '\.py$' || true)"
+
+# ① 语法自检：直接抓 SyntaxError（红绿组最怕的 rc=4 就是这一类）
+if [ -n "$PY_FILES" ]; then
+  BAD=""
+  for f in $PY_FILES; do
+    [ -f "$f" ] || continue
+    if ! "$PY" -c "import ast,sys; ast.parse(open(sys.argv[1],encoding='utf-8').read())" "$f" 2>/dev/null; then
+      BAD="$BAD $f"
+    fi
+  done
+  if [ -n "$BAD" ]; then
+    echo "[pre-commit][X] 语法错误：$BAD"
+    exit 1
+  fi
+  echo "[pre-commit] 语法自检 OK"
+fi
+
+# ② pyflakes：几秒钟，抓未使用导入 / 未定义名
+if [ -n "$PY_FILES" ]; then
+  echo "[pre-commit] pyflakes …"
+  if ! ( cd "$ROOT/backend" && "$PY" -m pyflakes app tests ../scripts ); then
+    echo "[pre-commit][X] pyflakes 不干净 —— 修干净再提交（口径：app tests ../scripts，exit 0 且无输出）"
+    exit 1
+  fi
+fi
+
+# ③ 全量 pytest：只在动了 backend/ 或 scripts/ 时跑
+case "$STAGED" in
+  *backend/*|*scripts/*)
+    echo "[pre-commit] pytest 全量（约 30 秒）…"
+    if ! ( cd "$ROOT/backend" && PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -o addopts="" -p no:cacheprovider -q ); then
+      echo "[pre-commit][X] pytest 有失败 —— 详情见上面输出（别用 --no-verify 绕过）"
+      exit 1
+    fi
+    ;;
+esac
+
+echo "[pre-commit] 快检通过（完整门：scripts/check_all.ps1）"
+exit 0
