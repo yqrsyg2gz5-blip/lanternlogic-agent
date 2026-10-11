@@ -87,7 +87,11 @@ def record(kind: str, **fields: Any) -> None:
             if v is None:
                 continue
             # 命令/文本类一律**打码** ✓（可能带密钥 ✓ 与全项目同一套实现 ✓）
-            row[str(k)[:24]] = redact_text(str(v))[:400] if isinstance(v, str) else v
+            # ★ 2026-10-11（审批降噪）：字段上限 400 → **4000** ✗✓
+            #   为什么（真机实测）：那条 18 秒视频的命令动辄上千字（heredoc 脚本 ✓），
+            #   400 字之后全丢 ⇒ 账本答不出"我到底批了什么" ✗ —— 那正是这本账存在的理由 ✓
+            #   （调用方 `_do_approve` 已经把审批那条裁到 4000 ✓ 这里只是别提前砍掉 ✓）。
+            row[str(k)[:24]] = redact_text(str(v))[:4000] if isinstance(v, str) else v
         line = json.dumps(row, ensure_ascii=False)
         with _LOCK:
             p.parent.mkdir(parents=True, exist_ok=True)

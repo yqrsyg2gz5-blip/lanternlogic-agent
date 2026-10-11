@@ -1691,8 +1691,11 @@ def _do_approve(task_id: str, call_id: str, decision: str, command: str = "") ->
         _srv_cmd = approval.command_of(task_id, call_id)
     except Exception:                                   # noqa: BLE001
         _srv_cmd = ""
+    # ★ 2026-10-11（审批降噪）：账本里存**全文**（上限 4000 字，只防"疯长"✗ 不截内容 ✓）——
+    #   原来 `[:200]`：真机那条 18 秒视频的命令动辄上千字（heredoc 脚本 ✓），
+    #   200 字之后全丢 ⇒ **账本答不出"我到底批了什么"** ✗（那正是这本账存在的理由 ✓）。
     audit.record("approval", decision=decision, task=task_id,
-                 command=(_srv_cmd or command or "")[:200] or None)
+                 command=(_srv_cmd or command or "")[:4000] or None)
     if decision == "forever":
         kept = approval.allow_forever(command)
         if not kept:

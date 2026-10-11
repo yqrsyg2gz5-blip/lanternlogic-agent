@@ -410,6 +410,19 @@ _READONLY_HEADS: frozenset[str] = frozenset({
     "get-service", "get-location", "get-command", "get-member", "get-help",
     "measure-object", "select-string", "sls", "test-path", "out-string",
     "select-object", "format-table", "format-list", "sort-object",
+    # ★★ 2026-10-11（审批降噪）：真机命令形态补录 —— 这几条在 84 条真实命令里
+    #   反复出现，且**默认用法就是"看一眼"**（写法级复核见 `_readonly_safe_head`）：
+    #     · `sed -n '120,330p' render.mjs`   ← 看文件（`-i` 由 guards 挡 ✗）
+    #     · `test -f x && echo OK`           ← 存在性探测（`[` 见 _READONLY_ALIASES ✓）
+    #     · `ffmpeg -version` / `ffprobe -v error -show_entries …`  ← 问版本/问格式 ✓
+    #     · `node -v` / `python -V`          ← 问版本 ✓（内联代码另有内联面拦 ✗）
+    #     · `command -v ffmpeg`              ← 找程序在哪（透明包装，内层是 -v ✓）
+    #     注意：`bash`/`sh`/`command` **故意不列** ✗ —— 它们由包装器面处理
+    #     （`_WRAPPER_HEADS` / `_TRANSPARENT_WRAPPERS` ✓），列进白名单反而会
+    #     抢在"透视不了 ⇒ ask"之前把它放行 ✗（那是 fail-closed 的核心 ✗）。
+    "sed", "test", "ffmpeg", "ffprobe", "ffplay", "mediainfo", "identify", "magick",
+    "node", "nodejs", "python", "python3", "py", "tar", "unzip", "gzip", "gunzip",
+    "bzip2", "xz", "diff", "sleep",
 })
 
 # 出现这些片段一律**不**算只读（就地删除/执行、awk 的 system()、PowerShell 的 iex…）
@@ -424,6 +437,397 @@ _WRITE_MARKERS: tuple[str, ...] = (
     #    现在它成了"工作区内也放行"的主判据之一 ⇒ 这一条必须自己挡住 ✓）
     '| "', "| '",
 )
+
+# ★★★ 2026-10-11（审批降噪 · 真机 176 次弹门的诊断结论）★★★
+#
+# 现场：一条 18 秒卡点视频（DeepSeek flash）弹了上百次审批。拿那次任务的
+# events.jsonl 里 **84 条真 shell 命令**过真判定重放 ⇒ **78 条判 ask** ✓
+# 归因（`_diag_classify.py`）里两类白挨的：
+#   · `outside:` 33 条 —— 全是**只读**（探测 ffmpeg / sed -n 看文件 / 调本仓 venv
+#     跑工作区脚本）却被越界面拦下 ✗（只读快路排在越界面**之后** ⇒ 一次没跑到 ✗）
+#   · 命令里的 `NAME=…` / `export NAME=…` 让"每段首词都要在只读白名单"**必然失败** ✗
+#     哪怕值就是个静态路径（`FF="/d/MiniMax…/ffmpeg.exe"`）✓
+# 下面三张表 + 两个小函数就是为这两条准备的 —— 判据只放宽到"**确定什么也没改**" ✓。
+
+# 只读白名单的**同义词表**：同一个程序的"看一眼"写法有多个别名
+_READONLY_ALIASES: dict[str, str] = {
+    "[": "test", "[[": "test",
+}
+
+# 这些程序在**默认用法**下只读；但带上下面的开关就变成"写" ✗（放行前必须查一遍）
+_READONLY_ARG_GUARDS: dict[str, tuple[str, ...]] = {
+    # `sed -n '1,80p' file` 只读 ✓；`sed -i 's/a/b/' file` 就地改文件 ✗
+    "sed": ("-i", "--in-place"),
+    # `sort -o out.txt` 会写文件 ✗
+    "sort": ("-o", "--output"),
+    # `tar -x/-c` 是解包/打包（写）✗；`tar -t` 只是列内容 ✓
+    #   ★ 但 `--to-command='sh -c id'` / `--use-compress-program=…` / `-I …` 是
+    #     **执行外部程序** ✗（审计过的绕过构造，`test_assign_prefix` / `test_round9_fixes`
+    #     两组红绿用例钉着 ✓）⇒ 这几个开关必须留在"写/执行"这一边 ✓。
+    "tar": ("-x", "--extract", "-c", "--create", "-I", "--to-command",
+            "--use-compress-program", "--checkpoint-action"),
+    # `unzip -d dir` 解包 ✗
+    "unzip": ("-d",),
+}
+
+# 媒体工具：**只有"问它自己的版本/能力"**算只读 ✓
+#   `ffmpeg -version` / `ffmpeg -filters` ✓（不产出任何文件 ✓）
+#   `ffmpeg -i in.mp4 out.mp4` ✗（出片就是写 ✓ 由下面的"没有输入输出文件"判据挡住 ✓）
+_MEDIA_QUERY_HEADS: frozenset[str] = frozenset({
+    "ffmpeg", "ffprobe", "ffplay", "mediainfo", "magick", "convert", "identify",
+})
+_MEDIA_QUERY_FLAGS: tuple[str, ...] = (
+    "-version", "-buildconf", "-filters", "-formats", "-codecs", "-decoders",
+    "-encoders", "-protocols", "-pix_fmts", "-sample_fmts", "-layouts", "-colors",
+    "-h", "-help", "-hide_banner", "-loglevel", "-v", "-nostdin", "-show_entries",
+    "-show_format", "-show_streams", "-select_streams", "-print_format",
+    "-of", "-sexagesimal", "-pretty", "-bitexact", "-report",
+    # ★ "只问不写"的开关集合（真机 84 条里 ffprobe 就是这么用的 ✓）
+    #   —— `ffprobe -v error -show_entries format=duration -of default=nw=1 x.wav`
+    #     是**读**那个 wav 的元数据 ✓ 不产出任何文件 ✓
+    "-show_chapters", "-show_programs", "-show_data", "-count_frames",
+    "-count_packets", "-show_private_data", "-read_intervals",
+)
+#: 出现这些就**不是**"问它自己"了 ✗（有输入/输出/滤镜 ⇒ 可能要产出文件 ✓）
+#:   ★ `-of`（输出格式）**不在**这里 ✓ —— 它是 ffprobe 的查询开关（`-of default=nw=1` ✓），
+#:     我第一版把它当成写开关 ✗ ⇒ 真机那条 `ffprobe … -of default=nw=1 x.wav` 被判死 ✓
+_MEDIA_WRITE_FLAGS: tuple[str, ...] = (
+    "-i", "-o", "-y", "-filter_complex", "-filter_complex_script", "-vf", "-af",
+    "-map", "-c", "-c:a", "-c:v", "-f", "-ss", "-t", "-to", "-r", "-b:a", "-b:v",
+)
+
+# 解释器：**只有"问我自己的版本"**算只读 ✓（`python -c …` / `node -e …` 是内联代码 ✗
+#   它们**照旧必问** ✓ —— 见 `_readonly_ok` 里那条"不放内联代码"的注释 ✓）
+_INTERPRETER_VERSION_FLAGS: frozenset[str] = frozenset({
+    "-v", "-vv", "--version", "-version",
+})
+
+_VAR_EXPANSION_RE = re.compile(r"\$[A-Za-z_{(]")
+_ASSIGN_NAME_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
+
+
+def _has_var_expansion(text: str) -> bool:
+    """`$VAR` / `${VAR}` / `$(` 有没有出现（决定"这段内容能不能静态判定"）。"""
+    return bool(_VAR_EXPANSION_RE.search(text)) or "`" in text
+
+
+def _is_static_assign_value(value: str) -> bool:
+    """赋的**值**能不能静态判定：不能有 `$`/反引号（命令替换、变量展开都不行 ✗）。
+
+    ★ 这是"静态赋值不算脚本片段"那条放宽的**唯一凭据** ✓ ——
+      值静态 ⇒ 这行除了设一个字符串什么也没干 ✓；值里带 `$` ⇒ 照旧当"判定不了" ✗。
+    """
+    v = value.strip().rstrip("\\").strip()
+    return not _has_var_expansion(v)
+
+
+def _strip_static_assigns(part: str) -> str:
+    """剥掉**静态**赋值前缀：`NAME=value` / `export NAME=value` / `"NAME=value"`。
+
+    ★ 为什么必须做（真机实测）：84 条命令里 **32 处** `NAME=…`、**53 处** `export …` ✓
+      而 `_part_readonly` 原来是"一见 `=` 就判『脚本片段，判定不了』" ✗
+      ⇒ 哪怕值只是个静态路径（`FF="/d/MiniMax…/ffmpeg.exe"`），整条命令也失去
+      "只读"资格 ⇒ 后面明明全是 `ls`/`-version` 这类只看一眼的命令，照样弹审批 ✗。
+
+    ★ 边界（一条都不松 ✓）：
+      · 值里带 `$`/反引号 ⇒ **不剥** ✗（`PATH="/x:$PATH"` 仍按"判定不了"处理 ✓）
+      · 只剥**开头**连续的赋值 ✗（`echo a=1` 里的 `=` 不在开头 ⇒ 不动它 ✓）
+    """
+    cur = _strip_wrapping_quotes(part).strip()
+    for _ in range(20):
+        if cur.lower().startswith("export ") and _is_static_assign_name(cur[7:].lstrip()):
+            cur = cur[7:].lstrip()
+            continue
+        if not _is_static_assign_name(cur):
+            break
+        m = _ASSIGN_NAME_RE.match(cur)
+        assert m is not None
+        end = m.end() + len(_assign_value(m.end(), cur))   # ★ 引号感知取整词 ✗ 不是 split ✓
+        cur = cur[end:].lstrip()
+    return cur
+
+
+def _is_static_assign_name(text: str) -> bool:
+    """`text` 是不是以**静态** `NAME=value` 开头（供 `_strip_static_assigns` 用）。
+
+    ★ 取"值"必须**按引号取整词** ✗ —— 我第一版用 `split()[0]`：
+      `FF="/d/MiniMax Design/…/ffmpeg.exe"` 的值里有**空格** ⇒ 只看得到 `"/d/MiniMax`
+      ⇒ 引号不配对 ⇒ 判成"非静态" ⇒ 整条命令失去只读资格 ✗
+      （真机那批命令的路径**恰恰都带空格**：`MiniMax Design`、`Program Files (x86)` ✓）
+    """
+    s = _strip_wrapping_quotes(text).lstrip()
+    m = _ASSIGN_NAME_RE.match(s)
+    if not m:
+        return False
+    value = _assign_value(m.end(), s)
+    if not value:
+        return False
+    if value[-1] in _QUOTES:
+        # 整段被引号包住（`FF="/a b/ffmpeg.exe"`）⇒ `_assign_value` 会把收尾引号一起带上 ✗
+        # —— 那是**赋值的语法**，不是值的一部分 ✓ 先摘掉它再判静态 ✓
+        value = value[:-1]
+    return _is_static_assign_value(value)
+
+
+def _assign_value(start: int, text: str) -> str:
+    """从 `start` 起取一个 shell 词的**原始文本**（引号感知；到空白/分隔符为止）。"""
+    i, n = start, len(text)
+    quote = ""
+    while i < n:
+        c = text[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c in _QUOTES:
+            quote = c
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c.isspace() or c in ";&|<>":
+            break
+        i += 1
+    return text[start:i]
+
+
+def _static_assign_name(text: str) -> str:
+    """`text` 开头那个**静态**赋值叫什么名字（不是静态赋值 ⇒ 空串）。"""
+    s = _strip_wrapping_quotes(text).lstrip()
+    if s.lower().startswith("export "):
+        s = s[7:].lstrip()
+    if not _is_static_assign_name(s):
+        return ""
+    m = _ASSIGN_NAME_RE.match(_strip_wrapping_quotes(s).lstrip())
+    return m.group(1) if m else ""
+
+
+def _clean_assign_value(value: str) -> str:
+    """把一个赋值的字面量整理成"能当程序名/路径用"的样子 ✓。
+
+    ★ 只摘**包围整段的成对引号** ✗ —— 值里带 `$`/反引号（动态）一律**原样返回** ✓
+      （那种值本来就会被展开判据挡掉 ✓ 这里不该替它"洗干净" ✗）。
+    """
+    if _has_var_expansion(value):
+        return ""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def _note_static_assigns(parts: list[str]) -> set[str]:
+    """把这一批子命令里的**静态赋值**记进黑板，返回见过的变量名集合 ✓。
+
+    ★ 黑板是**每次判定都清空**的临时状态 ✗（见 `_ASSIGNED_VALUES` 的说明 ✓）。
+    """
+    names: set[str] = set()
+    for part in parts:
+        name = _static_assign_name(part)
+        if not name:
+            continue
+        names.add(name)
+        s = _strip_wrapping_quotes(part).lstrip()
+        if s.lower().startswith("export "):
+            s = s[7:].lstrip()
+        m = _ASSIGN_NAME_RE.match(s)
+        if not m:
+            continue
+        raw_value = _assign_value(m.end(), s)
+        value = _clean_assign_value(raw_value.strip())
+        if value:
+            _ASSIGNED_VALUES[name] = value
+    return names
+
+
+_VAR_ONLY_RE = re.compile(r"""^\$[{]?([A-Za-z_][A-Za-z0-9_]*)[}]?$""")
+
+#: `export NAME=value` 的**首 token 是 `export`**（不带 `=` ✗）—— 只看
+#: `_raw_first_token` 会整段跳过"静态赋值剥离"那一步 ⇒ 53 处 `export …` 白挨 ✗。
+_ASSIGN_SHAPED_RE = re.compile(r"^(?:export\s+|set\s+)?[\"']?[A-Za-z_][A-Za-z0-9_]*=")
+
+#: 静态赋值占位符用的变量名（`${STATICVAR}` ✓ 见 `_substitute_static_vars` ✓）
+_STATIC_VAR_NAME = "STATICVAR"
+
+#: ★ 这一段里**已见过的静态赋值**：`名字 → 字面量值`（每次判定的**局部**状态 ✓）。
+#:   为什么要它 ✗：`FF="/…/ffmpeg.exe"` 之后 `"$FF" -version` 里，
+#:   `"$FF"` 这个"整段是变量"的形态要能回答"它其实是哪个程序" ✓
+#:   —— 喊不出身份就只能判"看不懂" ⇒ 真机 26 处 `"$FF"`/`"$V"` 全被问 ✗。
+#:   ★ 它是**一次判定内的临时黑板** ✗（不是缓存 ✗）：`check()` / `is_pure_readonly()`
+#:     进门先清空 ✓（`_readonly_ok` 与 `_readonly_safe_head` 都是同步纯函数 ⇒ 无线程问题 ✓）。
+#:     ⚠️ 我第一版把它做成"跨调用累加"✗ ⇒ 变量值会从上一个命令漏到下一个 ✗
+#:     （`X=$(rm -rf /)` 那类动态赋值不该被下一个命令当成"已知"✓ 清空这条钉着 ✓）。
+_ASSIGNED_VALUES: dict[str, str] = {}
+
+
+def _is_assign_shaped(text: str) -> bool:
+    """这一段**看起来就是赋值**吗（`NAME=` / `export NAME=` / `set NAME=`）。"""
+    return bool(_ASSIGN_SHAPED_RE.match(_strip_wrapping_quotes(text).lstrip()))
+
+
+#: 重定向 token（`2>&1` / `&>/dev/null` / `>/dev/null`）—— 它们决定"输出丢哪儿"，
+#: 由 `_REDIRECT_TOKEN_RE` 那段负责 ✓；在"开关列表"里只算噪声 ⇒ 先剔掉 ✓。
+_REDIRECT_TOKEN_ONLY_RE = re.compile(r"^(?:\d*|&)?>{1,2}\|?\s*(?:&\d|/dev/null|nul)$", re.I)
+
+
+def _is_redirect_token(tok: str) -> bool:
+    return bool(_REDIRECT_TOKEN_ONLY_RE.match(tok.strip().strip(_QUOTES)))
+
+
+def _split_keeping_quoted_paths(text: str) -> list[str]:
+    """按空白切词，但**引号内的空白不切** —— 只为让 `"…ffmpeg.exe"` 这种带引号的
+    路径能被 `_head_of` 认出来 ✓。
+
+    ★ 为什么必须补（真机实测）：`"/d/MiniMax Design/current/resources/ffmpeg/ffmpeg.exe"
+      -version` 用 `split()` 会切成 `"/d/MiniMax`、`Design/current/…`、`ffmpeg.exe"`
+      ✗ —— 首 token 是个**带引号的残缺路径** ⇒ `head` 变成 `minimax` ⇒ 明明在只读
+      白名单里的 `ffmpeg` 认不出来 ✗（这次那批命令**恰恰全带空格路径** ✓）。
+
+    ★ 稳妥起见只处理"**引号两两配平**"的情形 ✗：配不平（奇偶不对）就退回原来的
+      `split()` —— 那时候任何"更聪明的切法"都可能引入我没想过的形态 ✗。
+    """
+    if sum(text.count(q) for q in _QUOTES) % 2:
+        return text.split()
+    out: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    for ch in text:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in _QUOTES:
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch.isspace():
+            if buf:
+                out.append("".join(buf))
+                buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        out.append("".join(buf))
+    return out
+
+#: 这些短选项是**布尔**的（后面跟的那个词不是它的值）——`command -v ffmpeg` 的
+#: `-v` 就是"查一下 ffmpeg 在哪" ✓，它**不吃** `ffmpeg` 这个参数 ✓。
+_BOOL_ONLY_FLAGS: frozenset[str] = frozenset({"-v", "-V"})
+
+
+def _var_only_reference(text: str, assigned: frozenset[str] | set[str] = frozenset()) -> str:
+    """`"$FF"` / `${FF}` / `$FF` 这种"整段就是这个变量"的形态 ⇒ 返回**它被赋的那个值**。
+
+    ★ 为什么要认它（真机实测）：`FF="/d/MiniMax…/ffmpeg.exe"` 之后紧跟
+      `"$FF" -version` ✓ —— 值**上一行刚赋过**（静态字面量 ✓），这里只是把它当
+      程序名用 ✓。整段就是变量 ⇒ 展开结果**确定**（就是那个静态值 ✓）⇒
+      可以按"一个字面量"处理 ✓（调用方拿返回的路径去 `_head_of` 认程序 ✓）。
+    ★ 只认**整段就是变量**这一种 ✗ —— `$VAR/suffix`、`${A}${B}` 这类一律不认 ✗
+      ⇒ 判"判定不了" ⇒ 照旧问 ✓。
+    ★ 返回的是**赋的那个值**（不是变量名）✗✓：调用方要能据此认出"这就是 ffmpeg" ✓ ——
+      认不出（没赋过 / 动态赋的）就返回空串 ⇒ 照旧问 ✓。
+      ⚠️ 我第一版返回变量名 ✗ ⇒ `"$FF"` 的首词成了 `$ff`（不在白名单）⇒ 判死 ✓
+      （这条留在注释里，免得下一个人再踩 ✓）
+    """
+    m = _VAR_ONLY_RE.match(_strip_wrapping_quotes(str(text)).strip())
+    if not m:
+        return ""
+    name = m.group(1)
+    if name == _STATIC_VAR_NAME:                              # 占位符 ⇒ 上一段静态赋过 ✓
+        return "STATICVALUE"
+    if name not in assigned:
+        return ""
+    return _ASSIGNED_VALUES.get(name, "")
+
+
+def _all_vars_known(text: str, assigned: frozenset[str] | set[str]) -> bool:
+    """这段里出现的**每一个** `$VAR`/`${VAR}` 都在上文里静态赋过值吗 ✓。
+
+    ★ 有它就够了吗 ✗：光"认得名字"不代表"内容安全" ✗ —— 调用方拿到 True 之后
+      仍要把这些变量**换成中性字面量**再逐段判（`sed -n "$P"` ✓ / `sed -i "$P"` ✗）✓。
+    """
+    refs = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", text))
+    if not refs:
+        return False
+    return all((r in assigned) or (r == _STATIC_VAR_NAME) for r in refs)
+
+
+def _mask_known_vars(text: str, assigned: frozenset[str] | set[str]) -> str:
+    """把**已知静态变量**换成中性字面量 —— 判据照旧跑 ✓。
+
+    ★ 为什么是"中性字面量"而不是"把值填进去" ✗：
+      值是路径（`/d/MiniMax…/ffmpeg.exe` ✓）—— 填进去反而把**程序名**塞到参数位上，
+      语义就乱了 ✗。这一步只回答"这里有个**内容确定**的东西"✓；
+      "它到底是什么程序"由 `_var_only_reference` 专门回答 ✓（两条路分工 ✓）。
+    ★ 认不出来的变量**原样留着** ✗ ⇒ 后面的展开判据照旧拦 ✓（照旧问 ✓）。
+    """
+    names = {n for n in (assigned or ())} | ({_STATIC_VAR_NAME} if _STATIC_VAR_NAME else set())
+    if not names:
+        return text
+    pat = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.sub(rf"\$\{{?(?:{pat})\}}?", "STATICVALUE", text)
+
+
+def _has_real_redirect(command: str) -> bool:
+    """整条命令里有没有**重定向到真实文件**（`> out.txt` / `>> log` ✗）吗。
+
+    ★ 为什么要它（红绿门当场抓出来的 ✗）：`awk '{print > "/x/out.txt"}' in.txt`
+      的重定向藏在**引号里** ✗ —— `is_pure_readonly` 只看"每段首词在不在白名单"
+      （awk 在 ✓）⇒ 判成"纯只读" ⇒ 让写文件的命令走了只读快路 ✗
+      （既有用例 `test_bypass_constructions_ask` 当场变红 ✓）。
+      这里按**原文**扫一遍重定向（引号里的也算 ✓ —— 那正是 awk 的写法 ✓），
+      只放过 `/dev/null` 与 `&1`/`&2` 这类 fd 复用 ✓。
+    """
+    for m in _REDIRECT_TOKEN_RE.finditer(command):
+        tgt = m.group(1)
+        if tgt.lower() in _NULL_TARGETS or _FD_DUP_RE.fullmatch(tgt):
+            continue
+        return True
+    return False
+
+
+def _readonly_safe_head(head: str, toks: list[str], part: str) -> bool:
+    """白名单 head 的**用法级**复核：这几种程序换个开关就从"看"变"写" ✓。
+
+    只读白名单本身判的是"**是哪个程序**" ✓；这里补一层"**这次怎么用它**" ✓：
+      · `sed -n …` 只看 ✓ / `sed -i …` 就地改 ✗
+      · `ffmpeg -version` 问版本 ✓ / `ffmpeg -i in out` 出片 ✗
+      · `python -V` 问版本 ✓ / `python -c "…"` 内联代码 ✗（后者另有内联面拦 ✓）
+
+    ★ 开关列表里**先剔掉重定向 token** ✗（`2>&1` / `2>/dev/null` / `>/dev/null`）——
+      它们是"把输出丢到哪儿" ✓ 由上面那段重定向检查负责 ✓；留在这里只会被当成
+      一个"不认识的开关" ⇒ 把 `node -v 2>&1` 这种纯查询判死 ✗（真机就有 ✓）。
+    """
+    low_toks = [t.strip(_QUOTES).lower() for t in toks[1:]]
+    low_toks = [t for t in low_toks if not _is_redirect_token(t)]
+    guards = _READONLY_ARG_GUARDS.get(head)
+    if guards and any(t == g or t.startswith(g + "=") for t in low_toks for g in guards):
+        return False
+    if head in _MEDIA_QUERY_HEADS:
+        # 只认"问它自己"：带 -version/-filters/… 之类查询开关，且**不出现输入输出文件**
+        if not any(any(t.startswith(f) for f in _MEDIA_QUERY_FLAGS) for t in low_toks):
+            return False
+        if any(t in _MEDIA_WRITE_FLAGS for t in low_toks):
+            return False
+        # `-f lavfi` 这类"凭空造流"也算产出 ⇒ 只看上面那批"只问不写"的开关 ✓
+        if not any(t in _MEDIA_QUERY_FLAGS for t in low_toks):
+            return False
+    if head in _INTERPRETERS:
+        # 解释器只有在"只带版本开关、不带任何脚本/内联开关"时才算只读
+        if not low_toks:
+            return False
+        #   ★ `-v`/`-V` 也是"问版本" ✓（node -v / perl -v ✓）—— 别把它们当成
+        #     内联开关挡掉 ✗（真机 `node -v 2>&1` 就是这么写的 ✓）。
+        if any(t.startswith(("-c", "-e", "-r", "--eval", "--command", "-"))
+               and t not in _INTERPRETER_VERSION_FLAGS and not t.startswith("--v")
+               for t in low_toks):
+            return False
+        if not all(t in _INTERPRETER_VERSION_FLAGS or t.startswith("--v") for t in low_toks):
+            return False
+    return True
+
 
 
 def _iter_redir_targets(text: str) -> list[str]:
@@ -622,13 +1026,19 @@ def _strip_wrapper_prefix(toks: list[str]) -> str:
     第四轮复验：`xargs -a list.txt shred` 之前解析成 `list.txt shred`（-a 的值被当
     命令，shred 漏判）——短选项（≤2 字符）后跟一个 token 时视为"选项带值"，两者
     一起跳过。`find … | xargs shred` 里 shred 才成为内层首词。
+
+    ★ 2026-10-11（审批降噪）：`command -v x` 是**内建查询**（"x 在哪"）✓ ——
+      `-v`/`-V` 在 `command` 这个内建下**不带值** ✗，可上面那条"短选项带值"把
+      `ffmpeg` 当成了 `-v` 的值吞掉 ⇒ 内层变成 `which ffprobe`，而 `command` 的
+      内层是 `ffmpeg`（不在只读白名单）⇒ 一条纯查询命令被判"包装器透视不了" ✗。
+      真机 84 条里 `which ffmpeg ffprobe` / `command -v ffmpeg` 就是这形态 ✓。
     """
     rest = toks[1:]
     i = 0
     while i < len(rest):
         t = rest[i].strip(_QUOTES)
         if t.startswith("-"):
-            if len(t) <= 2 and i + 1 < len(rest):
+            if len(t) <= 2 and i + 1 < len(rest) and t not in _BOOL_ONLY_FLAGS:
                 i += 2  # 短选项带独立值（-a list.txt / -n 10 / -I {}）
             else:
                 i += 1
@@ -778,8 +1188,16 @@ class ApprovalManager:
     @staticmethod
     def _head_of(token: str) -> str:
         """单个 token → 可执行名：**引号归一化**（`r''m`→`rm`，审计 §4 根因）、
-        去路径前缀、去 .exe、小写。"""
-        t = re.sub(r"[\"'`]", "", token)  # 引号拼接（r''m / 'r'm）先拆掉
+        去路径前缀、去 .exe、小写。
+
+        ★ 2026-10-11（审批降噪）：**整词被引号包住的路径先拆壳** ✗ ——
+          `"/d/MiniMax Design/current/resources/ffmpeg/ffmpeg.exe" -version` 里
+          首词是**带引号的一整条路径**（路径本身含空格 ✓）⇒ 只 `rsplit("/")` 拿到的是
+          `minimax design/current/resources/ffmpeg/ffmpeg.exe"` ✗ 根本认不出是 ffmpeg ✗
+          （真机 84 条里 ffmpeg/ffprobe 的调用**全是这种带引号的写法** ✓）。
+        """
+        t = _strip_wrapping_quotes(str(token).strip())
+        t = re.sub(r"[\"'`]", "", t)  # 引号拼接（r''m / 'r'm）先拆掉
         t = t.lstrip("(")  # 第四轮复验：`(\rm -rf x)` 前导括号此前让首词判定失效
         t = t.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         low = t.lower()
@@ -1007,6 +1425,15 @@ class ApprovalManager:
                 if h in verbs and h not in hits:
                     hits.append(h)
         return hits
+
+    @staticmethod
+    def _outside_key(norm: str) -> str:
+        """越界路径的**记忆键**：按归一化后的**目录前几段**（同一目录的多种写法算一个键）。
+
+        ★ 单一事实来源 ✗：原来这段只写在 ④ 越界面里 ✓，这次"只读快路"也要用同一个键 ✓
+          ⇒ 提出来共用 ✓（两处各写一份迟早跑偏 —— 本仓栽过五次的"多处口径打架"✓）。
+        """
+        return "outside:" + "/".join(str(norm).split("/")[:4])
 
     @staticmethod
     def _outside_paths(command: str, is_inside: Callable[[str], bool]) -> list[tuple[str, str]]:
@@ -2011,12 +2438,35 @@ class ApprovalManager:
 
         白名单判定 = 每个子命令（包装器透视到最内层）的可执行名都在 _READONLY_HEADS，
         且无变量赋值 / 控制流关键字 / 写标记 / 真实文件重定向。
+
+        ★ 2026-10-11（审批降噪）两条修正，都来自真机 84 条命令的重放：
+          · **静态赋值前缀先剥掉** ✓（`FF="…"; ls` / `export PYTHONIOENCODING=utf-8`
+            是命令噪声，不是"看不懂的内容" ✓ —— 判据见 `_strip_static_assigns` ✓）
+          · **变量展开一票否决** ✗（`$VAR`/`${VAR}`/反引号在正文里出现 ⇒ 判不了 ✗）——
+            旧写法只在"首 token 以 $ 开头"时挡，`X=1; echo $X` 这种能溜过去 ✗
+            （`_readonly_ok` 里另有一道 ✓ 但本函数也被单独用作判据 ⇒ 它得自己站得住 ✓）
         """
         low = command.lower()
         if any(m in low for m in _WRITE_MARKERS):
             return False
-        for part in cls._split_top(command):
-            if not cls._part_readonly(part, depth=0):
+        _ASSIGNED_VALUES.clear()                               # ★ 临时黑板：每次判定清零 ✓
+        parts = cls._split_top(command)
+        _note_static_assigns(parts)                            # ★ 先收一遍静态赋值 ✓
+        assigned: set[str] = set()
+        for part in parts:
+            name = _static_assign_name(part)
+            if name:
+                assigned.add(name)                             # 静态赋值：记下名字 ✓
+            known = frozenset(assigned)
+            stripped = _strip_static_assigns(part)
+            if stripped and _has_var_expansion(stripped):
+                # ★ 变量必须**认得出来**：整段就是变量的（`"$FF"` ✓）或**每一个**
+                #   变量都在上文里静态赋过值（`test -f "$CHROME_PATH"` ✓）。
+                #   —— 拿整段去 match 永远不中 ✗（我第一版就是这样 ✓ 真机 26 处全判死 ✓）
+                if not (_all_vars_known(stripped, known)
+                        or _var_only_reference(_split_keeping_quoted_paths(stripped.strip())[0], known)):
+                    return False                               # 判定不了的展开 ⇒ 不白 ✗
+            if not cls._part_readonly(part, depth=0, assigned=known):
                 return False
         return True
 
@@ -2033,6 +2483,8 @@ class ApprovalManager:
     #     ——它们要么被白名单本身挡住（`rm` 不在表里 ✓），要么被下面这两道再挡一次 ✓。
     @classmethod
     def _readonly_ok(cls, command: str, approval_required: Iterable[str]) -> bool:
+        _ASSIGNED_VALUES.clear()                               # ★ 临时黑板：每次判定清零 ✓
+        _note_static_assigns(cls._split_top(command))
         if not cls.is_pure_readonly(command):
             return False
         # ★ 命令替换 / 反引号 / 进程替换：**一律不算只读** ✓
@@ -2042,6 +2494,25 @@ class ApprovalManager:
         #   旧代码只在"越界路径"那条路上用它（那里外面还套着别的面 ✓）；
         #   现在它变成**主判据**了 ⇒ 这一条必须自己挡住 ✓（测试里钉着 ✓）。
         if any(t in command for t in ("$(", "`", "<(", ">(")):
+            return False
+        # ★ 重定向到**真实文件**（含引号里那种 `awk '{print > "out.txt"}'`）⇒ 不是只读 ✗
+        #   （红绿门抓出来的：藏在引号里的重定向曾让写文件的 awk 走了只读快路 ✗）
+        if _has_real_redirect(command):
+            return False
+        # ★ 2026-10-11（审批降噪）：正文里的**变量展开**同样一票否决 ✗
+        #   `export PATH="/x:$PATH"` / `X=1; echo $X` 这类，值/内容**不是**字面量 ⇒
+        #   静态判不出它到底动没动文件 ⇒ 照旧问 ✓（静态赋值那条放宽只认字面量 ✓）。
+        #   ★ 例外只有一种：这个变量**上一行刚被静态赋值过**、且这一整段就是 `"$FF"`
+        #     （值确定 ⇒ 当字面量看 ✓）—— 真机 26 处 `"$FF"`/`"$V"` 正是这个形态 ✓。
+        for part in cls._split_top(command):
+            stripped = _strip_static_assigns(part)
+            if not _has_var_expansion(stripped):
+                continue
+            # ★ 只看**首词**：`"$FF" -version` 的变量在首词上 ✓（参数位的变量由
+            #   `_part_readonly` 逐段判 ✓）—— 我第一版拿**整段**去 match ✗ ⇒ 永远不中 ✓
+            first = _split_keeping_quoted_paths(stripped.strip())[:1]
+            if first and _var_only_reference(first[0], frozenset(_ASSIGNED_VALUES)):
+                continue
             return False
         flat = cls._flatten(command)
         if cls._DESTRUCTIVE.search(flat):                       # 删/移/改名/写进去…
@@ -2115,11 +2586,20 @@ class ApprovalManager:
         return ("cmd:" + fp) in self._always.get(task_id, set())
 
     @classmethod
-    def _part_readonly(cls, part: str, depth: int) -> bool:
+    def _part_readonly(cls, part: str, depth: int, assigned: frozenset[str] = frozenset()) -> bool:
+        """这一**段**是不是只读（`assigned` = 前面已经静态赋过值的变量名 ✓）。
+
+        ★ 2026-10-11（审批降噪）改了四处，全部来自真机 84 条命令的重放：
+          ① 静态赋值前缀先剥（`FF="…"` / `export X=y`）✓ 剥完为空 ⇒ 这行只是赋值 ✓
+          ② `[` 归一到 `test` ✓
+          ③ 白名单 head 再走一遍**用法级**复核（`sed -n` ✓ / `sed -i` ✗、`ffmpeg -version` ✓ /
+             `ffmpeg -i in out` ✗）——判据见 `_readonly_safe_head` ✓
+          ④ `"$FF"` 这种"整段就是一个**静态赋过的**变量" ⇒ 当字面量看 ✓
+        """
         if depth > 6:
             return False
         cur = _strip_wrapping_quotes(part)
-        toks = cur.split()
+        toks = _split_keeping_quoted_paths(cur)      # ★ 带引号的路径不切碎 ✓（见它的说明）
         if not toks:
             return True
         # 本层重定向先查（同 _part_suspicion：不能被包装器递归短路）
@@ -2130,9 +2610,58 @@ class ApprovalManager:
                 continue
             return False  # 重定向到真实文件 = 写
         raw = cls._raw_first_token(cur)
-        if "=" in raw or raw.startswith("$"):
-            return False  # 变量赋值 / $ 展开 = 脚本片段，判定不了
-        head = cls._head_of(toks[0])
+        if "=" in raw or raw.startswith("$") or _is_assign_shaped(cur):
+            # ★ 2026-10-11（审批降噪）：**静态赋值前缀先剥掉再判** ✓
+            #   旧写法一见 `=` 就判"脚本片段，判定不了" ✗ ⇒ `FF="…"` 这种纯噪声
+            #   把整条命令的只读资格拿走 ✗（真机 32 处 `NAME=` + 53 处 `export`✓）。
+            #   剥掉之后**还有内容** ⇒ 继续按内容判 ✓；剥完是空的 ⇒ 这行只是赋值 ✓ 放行 ✓
+            #   （值带 `$`/反引号的**剥不掉** ⇒ 落到 `return False` ✓ 照旧问 ✓）
+            #   ★ `_is_assign_shaped` 那一支是补的 ✗：`export NAME=…` 的**首 token 是
+            #     `export`**（不带 `=` ✓）⇒ 只看 `raw0` 会整段跳过剥离 ✗
+            #     —— 于是"唯一一处非只读 head 就是 export"把命令判死 ✓（真机 53 处 ✓）。
+            rest = _strip_static_assigns(cur)
+            if not rest:
+                return True
+            if rest == cur:
+                return False  # 剥不动（含 $ 展开 / 不是赋值形态）⇒ 判定不了 ✗
+            cur = rest
+            toks = cur.split()
+            if not toks:
+                return True
+        # ★ `"$FF"` / `$V`（**首词**就是一个静态赋过的变量）⇒ 当字面量看 ✓
+        #   ★ 顺序讲究：**先认"整段就是变量"再做通用否决** ✗ —— 反过来的话
+        #     `"$FF" -version` 会被当成"看不懂的展开"直接判死 ✓（我第一版就是这样 ✓）
+        #   ★ 判据：`_var_only_reference` **自带剥引号** ✓ —— 这里传**裸 token** ✓
+        #     （先 `_strip_wrapping_quotes` 会把 `"$FF"` 变成 `$FF` ⇒ 反而判不出来 ✓）
+        ref = _var_only_reference(toks[0], assigned)
+        if not ref and _has_var_expansion(toks[0]):
+            return False                                       # 不认识的变量当命令 ⇒ 判不了 ✗
+        if ref:
+            # 变量"身份" = 它被赋的那个字面量（`FF="…/ffmpeg.exe"` ⇒ ffmpeg ✓）
+            #   —— 认不出这个身份 ⇒ 判不了 ⇒ 照旧问 ✗（`X=…; "$X"` 这类 ✓）
+            head = cls._head_of(ref)
+            if head not in _READONLY_HEADS:
+                return False
+            if len(toks) == 1:
+                return True                                    # `"$FF"` 单独一个词 ✓
+            # `"$FF" -version` ⇒ 首词换成中性字面量，**继续按参数判** ✓
+            # （`-i`/输出文件这些仍然看得见 ⇒ `sed -i`、`ffmpeg … out.mp4` 照旧拦 ✗）
+            toks = ["STATICVALUE"] + toks[1:]
+            cur = " ".join(toks)
+        elif _has_var_expansion(cur):
+            # ★ 变量在**参数位**（`test -f "$CHROME_PATH"` ✓）：只要每个变量都认得出来
+            #   （上文静态赋过 ✓），就把它们当**中性字面量**继续逐段判 ✓
+            #   —— 参数是"看一眼的目标"还是"要改的文件"由 head 决定 ✓ 不受影响 ✓。
+            #   （`sed -n "$P"` ✓ 放行 / `sed -i "$P"` ✗ 照旧拦 ✓）
+            if not _all_vars_known(cur, assigned):
+                return False                                   # 有认不出的变量 ⇒ 判不了 ✗
+            cur = _mask_known_vars(cur, assigned)
+            toks = _split_keeping_quoted_paths(cur)
+            if not toks:
+                return True
+            head = cls._head_of(toks[0])
+        else:
+            head = cls._head_of(toks[0])
         if head in _WRAPPER_HEADS:
             m = _WRAPPER_RE.match(cur)
             if not m:
@@ -2140,16 +2669,32 @@ class ApprovalManager:
             inner = _strip_wrapping_quotes(m.group(1))
             if not inner.strip():
                 return False
-            return all(cls._part_readonly(sub, depth + 1) for sub in cls._split_top(inner))
+            sub_assigned = set(assigned)
+            for sub in cls._split_top(inner):
+                nm = _static_assign_name(sub)
+                if nm:
+                    sub_assigned.add(nm)
+            return all(cls._part_readonly(sub, depth + 1, frozenset(sub_assigned))
+                       for sub in cls._split_top(inner))
         if head in _OPAQUE_WRAPPERS or head in _SHELL_KEYWORDS:
             return False
         if head in _TRANSPARENT_WRAPPERS:
             # 复审 P0 误伤修复：透明包装递归内层（timeout 60 ls → ls 白名单 → 白）
+            # ★ 2026-10-11：`command -v x` / `command -V x` = 内建查询（"x 在哪"）✓
+            #   `-v` 是**布尔**开关 ✗ 不吃参数 ✓ —— 上面那步"短选项带值"会把 `x` 当成
+            #   `-v` 的值一起吞掉 ⇒ 内层变成残缺片段 ⇒ 一条纯查询被判"判定不了" ✗
+            #   （真机 `command -v ffmpeg` 正是这形态 ✓）。
+            if head == "command" and len(toks) >= 3 and toks[1].strip(_QUOTES) in _BOOL_ONLY_FLAGS:
+                return cls._part_readonly(toks[2].strip(_QUOTES), depth + 1, assigned)
             inner = _strip_wrapper_prefix(toks)
             if not inner:
                 return False
-            return cls._part_readonly(inner, depth + 1)
-        return head in _READONLY_HEADS
+            return cls._part_readonly(inner, depth + 1, assigned)
+        head = _READONLY_ALIASES.get(head, head)          # `[` → `test` ✓
+        if head not in _READONLY_HEADS:
+            return False
+        # ★ 2026-10-11：同一个程序换个开关就从"看"变"写" ✗ ⇒ 补一层用法复核 ✓
+        return _readonly_safe_head(head, toks, cur)
 
     # ---------- 判定入口 ----------
 
@@ -2180,6 +2725,10 @@ class ApprovalManager:
         """
         if not command.strip():
             return None
+        # ★ 2026-10-11（审批降噪）：先把这条命令里的**静态赋值**收进临时黑板 ✓ ——
+        #   `V="/d/…/python.exe"` 之后 `"$V" …` 这种写法要靠它才认得出来 ✓（越界面用 ✓）。
+        _ASSIGNED_VALUES.clear()
+        _note_static_assigns(self._split_top(command))
         # ★★ 2026-10-06（夜里实测：venv 里的 python.exe 不见了，只剩 pythonw.exe ✗）：
         #   任务跑的是**宿主上的真命令**（沙箱关着），而实测它们会跑 `rm -rf data todo.json`
         #   这类清理命令 ⇒ 只要路径写歪一点，就能删到**应用自己的安装目录** ✗✗。
@@ -2215,6 +2764,36 @@ class ApprovalManager:
         #     在 ④ 越界面 ✓），这里抢答会把两档口径搅乱 ✗。
         if not self._outside_paths(command, is_inside) and self._readonly_ok(command, approval_required):
             return None
+        # ★★ 2026-10-11（审批降噪 · 真机 176 次弹门）：**只读快路不再被"越界"挡住** ✓
+        #   现场：真机命令**每一条都带工作区之外的绝对路径**（`cd /d/测试-Flash对比/…`、
+        #   `"/d/AI/agent-shell/backend/.venv/Scripts/python.exe"`、`/d/MiniMax Design/…`）
+        #   ⇒ 上面那一行的 `not self._outside_paths(...)` 永假 ⇒ **`_readonly_ok` 一次
+        #   都没被求值** ✗ —— 上一班接的"只读批量放行"在这条任务上等于没接上 ✗
+        #   （诊断复算：84 条真命令里 `readonly_ok` 列**全是 False** ✓ 78 条判 ask ✓）。
+        #   ★ 判据本身**一个字没松** ✓：能走到这里 ⇒ 上面十道面（结构/动词/联网/内联/
+        #     容器/脚本/覆写/越界写…）**全都判过"不拦"**了 ✓；`_readonly_ok` 再要求
+        #     "每一段都在只读白名单里、无 `$()`/heredoc/内联代码/变量展开、无危险动词" ✓
+        #     ⇒ 剩下唯一的差别只是"**这些只读命令看的是工作区外的目录**" ✓
+        #     （看 ≠ 改 ✓；要改的部分由上面那些面照旧拦 ✗ 测试里逐条钉着 ✓）。
+        #   ★ 返回 `allow_readonly` 而不是 `None`：与 ④ 越界面**同一档语义** ✓
+        #     —— 越界只读要**留一条审计**（可追溯 ✓ 用户能看见"它读了哪儿" ✓）。
+        #   ★ 工作区**内**的纯只读命令仍按**既定契约**返回 `None` ✗✓（不是"已放行"的
+        #     刷屏 ✓ —— `test_approval_failclosed` / `test_approval_reaudit` /
+        #     `test_approval_security` 三组都钉着这个语义 ✓ 不许动 ✓）。
+        if self._readonly_ok(command, approval_required):
+            outside = self._outside_paths(command, is_inside)
+            if not outside:
+                return None
+            # ★ 键**沿用既有的"目录级"口径** ✗✓（`test_approval_security.py` 的
+            #   `test_outside_path_memory_keyed_by_directory` / `..._unifies_equivalent_path_spellings`
+            #   两条钉着它 ✓）：同一个目录的**不同只读命令**（`ls` / `find -type f`）
+            #   算同一个键 ⇒ 用户点过一次「总是允许」之后，同一目录换个命令也不再问 ✓。
+            #   ⚠️ 我第一版用 `"readonly:" + command[:60]`（**按命令**）✗ ⇒ 那两条既有用例
+            #      当场变红 ✓（红绿门拦住的就是这种"顺手改掉别人契约"✓）。
+            key = self._outside_key(outside[0][1])
+            if key in self._always.get(task_id, set()):
+                return None                                    # 这个目录用户已经放行过 ✓
+            return Verdict(self._readonly_reason(command), key, "allow_readonly")
         # ★★ 2026-10-06「这类以后都别问」（**跨任务、持久化** ✓）：
         #   背景：实测一个 10 分钟的小活要用户点 **2–5 次**审批 ✓（等审批常常比干活还久 ✓）。
         #   已有的两档都**不跨任务**：`allow_all` 只活在本任务内存里 ✓、`remember` 只记本任务 ✓
@@ -2406,8 +2985,7 @@ class ApprovalManager:
             if self._iterpreter_only(raw, command):
                 return None
             # 记忆键按**归一化后**的目录前几段：同一目录的不同写法算同一个键
-            root = "/".join(norm.split("/")[:4])
-            key = "outside:" + root
+            key = self._outside_key(norm)
             if key not in remembered:
                 if self.is_pure_readonly(command):
                     return Verdict(f"只读访问工作区之外：{raw}", key, "allow_readonly")
@@ -2556,8 +3134,19 @@ class ApprovalManager:
 
         这样"用后端 python 跑工作区里的脚本"就不用问 ✓；
         而"删掉这个 python.exe"仍然被应用目录硬保护拦下 ✓。
+
+        ★ 2026-10-11（审批降噪 · 真机实测）：两个**没认出来**的写法补上 ✓ ——
+          · 路径被**引号**包着（`"/d/…/python.exe" tools/tts.py` ✓ 路径里有空格时必然这么写 ✓）
+          · 路径存在**变量**里（`V="/d/…/python.exe"` 之后 `"$V" -V` ✓）
+          旧写法拿"`_ABS_PATH_RE` 扫出来的那一段"当路径 ✗ ⇒ 带引号时扫出来的是
+          `"/d/…/python.exe`（少个尾巴引号 ✓ 还带着引号 ✓）⇒ `basename` 认不出解释器 ✗
+          ⇒ 真机 84 条里有 **20 条**反复弹门（"用后端 python 跑工作区脚本"这一件事 ✓）。
         """
-        low_path = str(path_raw).replace("\\", "/").lower()
+        low_path = str(path_raw).replace("\\", "/").lower().strip("\"'` ")
+        # ★ 变量形态（`"$V"`）：换成它被静态赋的那个值再认 ✓（认不出就照旧判 ✗）
+        ref = _var_only_reference(path_raw)
+        if ref:
+            low_path = str(ref).replace("\\", "/").lower().strip("\"'` ")
         head = low_path.rsplit("/", 1)[-1]
         if not (head.startswith("python") or head in ("node", "node.exe", "bash", "sh", "zsh",
                                                       "pwsh", "powershell", "cmd", "cmd.exe")):
@@ -2577,8 +3166,12 @@ class ApprovalManager:
                 continue
             # 前文去掉引号**再**去空白再判：`"D:\...\python.exe" x.py` 前文只有一个引号 ✓；
             # 而 `cd /w && "…python.exe"` 前文是 `cd /w &&` ✓（先 strip 空白会把引号留在末尾 ✗，本班踩过）
-            before = c[:idx].strip('"\'').strip()
-            if not before or before.endswith(("&&", "||", ";", "|", "&", "(")):
+            # ★ 2026-10-11：**换行也是分隔符** ✗ —— 真机那批命令全是
+            #   `cd /w\n"/d/…/python.exe" script.py` 这种"多行脚本"写法 ✓
+            #   （`.strip()` 会把结尾的换行吃掉 ⇒ 前文成了 `cd /w` ⇒ 判"不是执行"✗）。
+            before = c[:idx].strip("\"'").rstrip(" \t")       # 只去行内空白，保留换行判据 ✓
+            if (not before
+                    or before.endswith(("&&", "||", ";", "|", "&", "(", "\n", "\r"))):
                 return True
         return False
 

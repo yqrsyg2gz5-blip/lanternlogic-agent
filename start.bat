@@ -62,6 +62,13 @@ echo  [1/1] Starting the backend - it also serves the UI ...
 curl -s -m 2 -o nul "%URL%api/v1/auth/check"
 if not errorlevel 1 goto backend_up
 
+REM Pin the child python's output encoding to UTF-8. `chcp 65001` sets this
+REM console's code page only; it does NOT reach a redirected child process.
+REM Without this, the backend logs GBK bytes into backend_restart.log (Chinese
+REM paths become mojibake) -- and mojibake is worse than a plain "?".
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUTF8=1"
+
 cd /d "%ROOT%backend"
 start "AgentShell-Backend" /min cmd /c ""%PY%" -m app.main >> "%ROOT%backend_restart.log" 2>&1"
 

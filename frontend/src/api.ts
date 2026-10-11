@@ -105,8 +105,11 @@ export interface AgentApi {
   createTask(input: string, projectId?: string): Promise<TaskSummary>;
   getTask(id: string): Promise<TaskSummary>;
   cancelTask(id: string): Promise<void>;
-  /** 审批待确认命令：once=仅此一次 / always=总是允许（本任务内记住）/ deny=拒绝 */
-  approveTask(id: string, callId: string, decision: 'once' | 'always' | 'deny'): Promise<{ ok: boolean }>;
+  /** 审批待确认命令：once=仅此一次 / always=总是允许（本任务内记住）/ deny=拒绝
+   *  ★ 2026-10-11：多一个 `command`（命令原文）—— 后端用它算"这条命令"的指纹，
+   *    用户点「总是允许」时才真的记得住（老客户端不传 = 退化成只记"那一类"✓）。 */
+  approveTask(id: string, callId: string, decision: 'once' | 'always' | 'deny',
+              command?: string): Promise<{ ok: boolean }>;
   /** ★ editOfSeq：改一句重发 —— 把那条用户消息及其之后作废，用 text 从那里重跑 */
   sendMessage(taskId: string, text: string, role?: string, editOfSeq?: number): Promise<void>;
   /** 切换本会话身份（空 = 恢复默认助手）——立即注入对话历史 */
@@ -510,12 +513,18 @@ export class HttpApi implements AgentApi {
     id: string,
     callId: string,
     decision: 'once' | 'always' | 'deny',
+    command = '',
   ): Promise<{ ok: boolean }> {
     // 409 = 没有等待中的审批（可能已被处理或任务已取消）——request() 会把 detail 带出来
+    // ★★ 2026-10-11（审批降噪）：**把命令原文带上** ✓ —— 后端 `_do_approve` 要拿它算
+    //   "这条命令"的指纹（用户点「总是允许」时记住的正是它 ✓）。
+    //   旧写法只发 `{call_id, decision}` ✗ ⇒ 后端收到空串 ⇒ 指纹算不出来 ⇒
+    //   「总是允许」只记住了一个"结构类"的键（`struct:*` 偏偏又是故意不记的 ✗）
+    //   ⇒ 用户点了等于没点 ✓（真机 176 次弹门里，同一条命令被反复问就是这儿来的 ✓）。
     return request<{ ok: boolean }>(`/tasks/${id}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ call_id: callId, decision }),
+      body: JSON.stringify({ call_id: callId, decision, command }),
     });
   }
 
@@ -1308,6 +1317,7 @@ export class MockApi implements AgentApi {
     taskId: string,
     callId: string,
     _decision: 'once' | 'always' | 'deny',
+    _command = '',
   ): Promise<{ ok: boolean }> {
     // Mock 剧本不触发审批（mockRun.ts 不调 shell_exec）；这里只做形态对齐，
     // 并把状态推回 running，保证 UI 的按钮流程在 mock 模式下也能走通。

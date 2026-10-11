@@ -678,16 +678,49 @@ button, .taskitem, .proj-select, .proj-input, .proj-textarea, .filechip {
   overflow: hidden; /* 任何内容都不许溢出到栏外 */
   animation: slideDown 0.15s ease-out;
 }
-.approval-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.approval-main { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .approval-title { color: #f7b26a; font-size: 13px; font-weight: 600; white-space: nowrap; flex: 0 0 auto; }
-.approval-cmd {
+
+/* ★★ 2026-10-11（用户原话："那串命令普通人看不懂" / "让人一下看懂"）：
+   审批栏改成**三层** —— ① 人话摘要 ② 为什么要问你 ③ 原始命令**折叠**。
+     · `.approval-summary` 允许换行（人话可能是一整句 ✓ 不能像命令那样省略号截断 ✗）
+     · `.approval-why` 用次要色（它是"解释" ✓ 不该抢摘要的注意力 ✓）
+     · `.approval-raw` 是 **details**（默认收起 ⇒ 不点开就看不到那串码 ✓ 但**没删** ✓） */
+.approval-summary {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis; /* 超长命令省略号收尾（完整命令在时间线的 action 卡片里） */
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.approval-why {
+  flex: 1 1 100%;
   font-size: 12px;
-  padding: 3px 8px;
+  color: var(--muted, #9aa3ad);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.approval-raw { flex: 1 1 100%; min-width: 0; }
+.approval-raw > summary {
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.7;
+  user-select: none;
+  padding: 2px 0;
+}
+.approval-raw > summary:hover { opacity: 1; }
+.approval-raw[open] > summary { opacity: 0.95; }
+
+.approval-cmd {
+  display: block;
+  min-width: 0;
+  max-height: 160px;            /* 展开后也别把整屏吃掉 ✓ */
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  padding: 5px 8px;
+  margin-top: 4px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.28);
 }

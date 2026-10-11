@@ -143,9 +143,17 @@ export function TaskView({ taskId, onTasksChanged }: Props) {
   const pendingCallId = waitingApproval
     ? lastStatus?.call_id ?? lastActionPayload?.call_id
     : undefined;
-  const pendingCommand = pendingCallId
-    ? String((lastActionPayload?.params as Record<string, unknown> | undefined)?.command ?? '')
-    : '';
+  // ★★ 2026-10-11（审批卡片说人话）：命令原文**优先取 status 里那一份** ✗✓ ——
+  //   它是后端在弹门那一刻发出来的（跟这张卡一一对应 ✓ 不会串到别的 action 上 ✓）；
+  //   `lastActionPayload` 只是**旧后端**的兜底（老事件里没有 command 字段 ✓ 契约 add-only ✓）。
+  const pendingCommand = String(
+    lastStatus?.command
+      ?? (lastActionPayload?.params as Record<string, unknown> | undefined)?.command
+      ?? '',
+  );
+  // 人话两层由**后端规则表**给 ✓（前端不自己编词 ✗ —— 一处声明 ✓）；老后端没有 ⇒ 空 ✓
+  const pendingSummary = String(lastStatus?.summary ?? '');
+  const pendingWhy = String(lastStatus?.why ?? '');
 
   // 产物区：任务交付后拉一次工作区文件清单（html 可直接预览）
   const [speaking, setSpeaking] = useState(false);
@@ -825,7 +833,11 @@ const [autoRead, setAutoRead] = useState<boolean>(() => localStorage.getItem('au
     setApproving(true);
     setApproveError(null);
     try {
-      await api.approveTask(task.id, pendingCallId, decision);
+      // ★★ 2026-10-11（审批降噪）：**把命令原文一起送上去** ✓ ——
+      //   后端 `_do_approve` 用 `command` 算"这条命令"的指纹 ⇒ 用户点「总是允许」时
+      //   记得住的才是**他看到的那条命令** ✓。旧写法只发 `{call_id, decision}` ✗
+      //   ⇒ 后端收到空串 ⇒ 点了等于没点 ✓（真机 176 次弹门里重复问的那一大块 ✓）。
+      await api.approveTask(task.id, pendingCallId, decision, pendingCommand);
       onTasksChanged();
     } catch (e) {
       setApproveError(e instanceof Error ? e.message : String(e));
@@ -1056,8 +1068,25 @@ const [autoRead, setAutoRead] = useState<boolean>(() => localStorage.getItem('au
       {waitingApproval && (
         <div className="approval-bar">
           <div className="approval-main">
-            <span className="approval-title">注意：命令等待你的批准</span>
-            {pendingCommand && <code className="mono approval-cmd">{pendingCommand}</code>}
+            {/* ★★ 2026-10-11（用户原话："那串命令普通人看不懂" / "让人一下看懂"）：
+                改成**三层** ✗✓
+                  ① 一句人话摘要（后端规则表给的 ✓ 不调模型 ✗）
+                  ② 一句"为什么要问你"
+                  ③ 原始命令**默认折叠** ✗ —— 折叠 ≠ 删除 ✓ 点开就能查证 ✓
+                后端没给新字段（老后端 ✓）时退回原来那句 title ✓ —— 契约 add-only ✓ */}
+            <span className="approval-title approval-summary">
+              {pendingSummary ?? '注意：命令等待你的批准'}
+            </span>
+            {pendingSummary && (
+              <span className="approval-hint">注意：有一条命令等待你的批准</span>
+            )}
+            {pendingWhy && <div className="approval-why">{pendingWhy}</div>}
+            {pendingCommand && (
+              <details className="approval-raw">
+                <summary>▸ 看原始命令</summary>
+                <code className="mono approval-cmd">{pendingCommand}</code>
+              </details>
+            )}
             {!pendingCallId && <span className="approval-hint">（未取到 call_id，可刷新页面后重试）</span>}
           </div>
           {/* A3（审计台账 P1）：审批是"最后一次拦得住"的地方——必须说清它批的是什么。

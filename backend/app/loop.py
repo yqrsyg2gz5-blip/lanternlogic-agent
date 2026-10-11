@@ -19,6 +19,7 @@ from .bus import EventBus
 from .executors.base import ExecResult, Executor
 from .redact import redact_deep as _redact_deep, redact_text_tool
 from . import permissions      # ★ 2026-10-07：按角色限权（只读角色不许改已有的东西 ✓）
+from . import humanize         # ★★ 2026-10-11：审批卡片说人话（规则表 ✓ 不调模型 ✗）
 from . import audit            # ★★ A-4（2026-10-07）：**任务起止**的"止"记进审计账本 ✓
 from .schemas import EventEnvelope, TaskSummary
 from .store import FsStore
@@ -1854,13 +1855,27 @@ class TaskRun:
                         "call_id": call_id,
                     })
                 else:
-                    if not await self._approval_gate(verdict, call_id, context=command[:120]):
+                    # ★★ 2026-10-11（审批降噪 · 真机 176 次弹门）：**不要再截断命令** ✗
+                    #   旧写法 `context=command[:120]` ⇒ `_approval_gate` 把**前 120 字**
+                    #   交给 `note_command`/`remember` ⇒ 用户点「总是允许」时记下的是那个
+                    #   **残句的指纹** ✗ ⇒ 真命令（几百字，真机 84 条里多数如此 ✓）的指纹
+                    #   永远对不上 ⇒ **同一条命令下一次又弹** ✓（审计账里 3 次 `always` 全白点 ✓）。
+                    #   `events` 里存的是**全文** ✓（审计账要能回答"我批的是哪条命令" ✓
+                    #   截断就等于把那本账废掉 ✓）；显示层要短，由**前端**截 ✓（它管显示 ✓）。
+                    if not await self._approval_gate(verdict, call_id, context=command):
                         return ExecResult(False, "用户拒绝执行该命令（deny）", 0)
         return await self.executor.run_tool(name, args, self.workdir)
 
     async def _approval_gate(self, verdict: Verdict, call_id: str, context: str = "") -> bool:
         """弹审批并等决议：deny → False；always → 记忆并 True；once → True。
-        P1-6：等待按 (task_id, call_id) 隔离，并发任务不会互相顶掉 Future。"""
+        P1-6：等待按 (task_id, call_id) 隔离，并发任务不会互相顶掉 Future。
+
+        ★★ 2026-10-11（审批卡片说人话 · 用户原话"那串命令普通人看不懂"）：
+          事件里**多三个 add-only 字段** ✗✓ —— 老前端忽略即可 ✓ 老字段一个不动 ✓：
+            · `summary` —— 一句人话（规则表打底 ✓ 见 `app/humanize.py` ✓ **不调模型** ✗）
+            · `why`     —— 一句"为什么要问你"（把内部判据翻成人话 ✓）
+            · `command` —— 命令**原文**（前端默认折叠显示 ✗ 但**不删** ✓ 要能查证 ✓）
+        """
         self.set_status("waiting_approval")
         # call_id 随 status 一起发：前端据此把审批按钮与对应的 action 精确关联
         # （契约 add-only 字段，见 contracts/01-events.md；旧前端忽略即可）
@@ -1869,6 +1884,9 @@ class TaskRun:
             "state": "waiting_approval",
             "detail": f"等待审批：{verdict.reason}{suffix}",
             "call_id": call_id,
+            "summary": humanize.approval_summary(context, verdict.reason),
+            "why": humanize.why_ask(verdict.reason),
+            "command": str(context or ""),
         })
         # ★ 2026-10-07（第 9 项补）：**把要批的那条命令交给服务端记下来** ✓
         #   —— 审计账要回答"我批的是哪条命令" ✓ 而原来这条信息只在界面手里 ✗（界面还没传 ✓）
@@ -1883,7 +1901,10 @@ class TaskRun:
         if decision == "deny":
             return False
         if decision == "always":
-            self.approval.remember(self.task.id, verdict.key)
+            # ★ 「总是允许」要记住**用户看到的那条命令** ✗ —— 传进去的是**全文** ✓
+            #   （曾经这里是 `verdict.key` 单参数 ✓ 而命令被 loop 截成 120 字 ✗
+            #    ⇒ 存下来的指纹对不上真命令 ⇒ 点了等于没点 ✓ 真机 176 次弹门的另一半 ✓）
+            self.approval.remember(self.task.id, verdict.key, str(context or ""))
         return True
 
     async def _finish(

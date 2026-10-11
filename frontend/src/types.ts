@@ -101,6 +101,12 @@ export interface StatusPayload {
   detail?: string;
   /** 仅在 state === 'waiting_approval' 时出现：待审批那次工具调用的 call_id（契约 add-only 字段） */
   call_id?: string;
+  /** ★ 2026-10-11（审批卡片说人话）：一句人话摘要（后端规则表给的，不调模型）—— add-only */
+  summary?: string;
+  /** ★ 同上：一句"为什么要问你"（把内部判据翻成人话）—— add-only */
+  why?: string;
+  /** ★ 同上：待批命令**原文**（前端默认折叠显示，便于查证）—— add-only */
+  command?: string;
 }
 
 /** error —— 错误也是一等公民（走事件流，不另搞报错通道） */

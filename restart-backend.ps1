@@ -48,6 +48,14 @@ if ($conn) {
 Start-Sleep -Seconds 2
 
 # ③ 启动新后端（★ 必须用 cmd.exe；本仓实测 Start-Process pwsh 会报 cannot find the file specified）
+#
+# ★★ 2026-10-11（编码）：**先把子进程的输出编码钉成 UTF-8** ✓
+#   为什么必须显式钉（实测的坑 ✗）：日志是**重定向**写出去的（`>> backend_restart.log`），
+#   这时 Python 的 stdout 用 **locale 编码**（中文 Windows = GBK ✓），跟 chcp 无关 ✗
+#   ⇒ 文件里是 GBK 字节 ⇒ 下面第 ⑤ 步按 UTF-8 读它 ⇒ 中文全成花码 ✗
+#   （用户报的"卡片上有编码那些东西"里就有这一类 ✓ 宁可显示成 `?` 也不要花码 ✓）
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
 Start-Process -FilePath "cmd.exe" `
     -ArgumentList "/c", "cd /d $root\backend && .venv\Scripts\python.exe -m app.main >> $root\backend_restart.log 2>&1" `
     -WindowStyle Hidden
@@ -85,6 +93,8 @@ try {
 }
 
 # ⑤ ★ 关键一步：确认这次启动【模型提供者是就绪的】，而不是"服务活着但模型是坏的"
+#    ★ 2026-10-11（编码）：显式 UTF-8 + 容错替换 —— 宁可某几个字显示成 `?`，
+#      也不要整行变成花码（用户原话 ✓ 花码是"看着有字、其实一个字都读不出"✗）。
 $tail = Get-Content "$root\backend_restart.log" -Tail 40 -Encoding utf8 -ErrorAction SilentlyContinue
 if ($tail | Where-Object { $_ -match "provider=.*就绪|provider=\w+ " }) {
     Write-Host "[ok] 模型提供者就绪 ✓"

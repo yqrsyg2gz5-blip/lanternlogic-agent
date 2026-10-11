@@ -2629,10 +2629,13 @@ experiment(
 # ★ 审批决议是**最该留痕**的一件事 ✓ —— 原来它只落在各自任务的事件流里 ✗
 #   （"这一个月我批过哪些命令" ⇒ 202 个任务谁能翻得动 ✓）
 #   回滚态 = 不记（正是修复前的形态 ✓）
+#   ★ 2026-10-11：锚点跟着实现更新（`[:200]` → `[:4000]` ✓ 见"编码别再出花码"那条提交：
+#     真机命令动辄上千字 ⇒ 200 字让账本答不出"批了什么" ✗）。
+#     门自己会告诉我们锚点失效（"锚点文本未找到——实验本身失效"✓）—— 这正是它该做的 ✓
 experiment(
     "审批决议不进总账回退（查不到批过什么）", _APP_MAIN,
     '    audit.record("approval", decision=decision, task=task_id,\n'
-    '                 command=(_srv_cmd or command or "")[:200] or None)',
+    '                 command=(_srv_cmd or command or "")[:4000] or None)',
     '    pass  # MUTANT: 不记账 ✗',
     "tests/test_audit_ledger.py",
 )
@@ -2763,10 +2766,11 @@ experiment(
 
 # ★ **命令里的密钥必须打码** ✗ —— 这本账是给用户翻的 ✓ 原样记下来 = 又开一个泄漏面 ✓
 #   （`curl -H "Authorization: Bearer sk-…"` 这种命令真实存在 ✓）
+#   ★ 2026-10-11：锚点跟着实现更新（`[:400]` → `[:4000]` ✓ 同一条提交 ✓）
 experiment(
     "审计账不打码回退（密钥进账本）", _TMP_ROOT / "backend" / "app" / "audit.py",
-    "            row[str(k)[:24]] = redact_text(str(v))[:400] if isinstance(v, str) else v",
-    "            row[str(k)[:24]] = str(v)[:400] if isinstance(v, str) else v",
+    "            row[str(k)[:24]] = redact_text(str(v))[:4000] if isinstance(v, str) else v",
+    "            row[str(k)[:24]] = str(v)[:4000] if isinstance(v, str) else v",
     "tests/test_audit_ledger.py",
 )
 

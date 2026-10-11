@@ -48,7 +48,16 @@ def _fake_python_probe(monkeypatch):
 
 
 def _mkroot(tmp: Path, *, config: bool = True, dist: bool = True, port: int = 8642,
-            skills: int = 8) -> Path:
+            skills: "int | None" = None) -> Path:
+    """造一个"健康布局"的假装机目录 ✓。
+
+    ★ 2026-10-11（本次审批修复顺手带上 ✗✓）：`skills` 默认从写死的 **8** 改成 **None = 全给** ——
+      上面 `preflight.EXPECTED_SKILLS` 那天加了第 9 个技能（「卡点视频」✓ 本仓确实在 ✓），
+      而这个默认值还停在 8 ⇒ "健康布局"缺一个 ⇒ 体检判 incomplete ⇒ 三条用例集体变红 ✗
+      （跑 check_all 时看到的正是这三条 ✓ 与审批改动无关 ✓）。
+      **默认值跟着名单走**才是这条用例的本意（"健康布局 = 名单里都有"✓）；
+      写死一个数字则每次加技能都会静默变红一次 ✗。
+    """
     (tmp / "backend").mkdir(parents=True, exist_ok=True)
     if config:
         (tmp / "config.json").write_text(json.dumps({"server": {"port": port}}), "utf-8")
@@ -57,7 +66,9 @@ def _mkroot(tmp: Path, *, config: bool = True, dist: bool = True, port: int = 86
         (tmp / "frontend" / "dist" / "index.html").write_text("<html></html>", "utf-8")
     # 技能库：用**出厂名单里的真名字**（与真实仓库一致 —— 这正是会被 tar 弄坏的那一类）；
     # 体检是"点名核对"，所以"健康布局"必须用真名，否则它本来就会被判不完整。
-    for name in list(preflight.EXPECTED_SKILLS)[:skills]:
+    listed = list(preflight.EXPECTED_SKILLS)
+    want = listed if skills is None else listed[:skills]
+    for name in want:
         d = tmp / "backend" / "skills" / name
         d.mkdir(parents=True, exist_ok=True)
         (d / "SKILL.md").write_text("# skill", "utf-8")

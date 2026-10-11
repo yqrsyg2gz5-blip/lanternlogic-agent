@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 出厂自带的技能库（目录名就是技能名）。用于**装机包完整性点名核对**：
 # 少一个 / 名字被解包工具改坏，都要在这里响。新人加技能时，
 # `tests/test_preflight.py::test_expected_skill_list_matches_repo` 会红，逼着同步这份名单。
-EXPECTED_SKILLS = ("代码工程", "写作助手", "幻灯片制作", "数据分析可视化",
+EXPECTED_SKILLS = ("卡点视频", "代码工程", "写作助手", "幻灯片制作", "数据分析可视化",
                    "桌面整理", "网站建设", "联网研究", "视频生成")
 _SKILL_FIX = ("重新获取完整包：git clone 官方仓库，或用 7-Zip 解压官方 zip；"
               "★ 不要用 `git archive | tar` 在 Windows 上解包 —— 实测它会丢掉中文名目录"
