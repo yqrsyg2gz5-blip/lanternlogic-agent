@@ -25,6 +25,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -62,10 +64,17 @@ def test_python_output_is_gbk_without_the_env_and_utf8_with_it(tmp_path):
     为什么值得真跑一次：这条链上"看起来设了编码"和"真的设了"差一个字节就会花码 ✓
     （本仓栽过：`chcp 65001` 看着像"已经 UTF-8 了"✗）。
 
-    ★ 2026-10-12 修：原版把子进程的 stderr 丢进 DEVNULL，
-      一旦子进程**根本没跑起来**，失败信息只有一句 `assert b''`，
-      定位不到原因 ✗（CI 实测踩到：`D:\\a\\...` 上红了这一条，而现象完全看不出为什么 ✓）。
-      现在把 returncode / stderr 一起收进断言消息 —— 失败时**直接告诉你子进程怎么了** ✓。
+    ★ 2026-10-12 两次修：
+      ① 原版把子进程 stderr 丢进 DEVNULL ⇒ 子进程一旦没输出，失败信息只有 `assert b''`，
+         看不出为什么 ✗。现在 returncode / stderr 一起进断言消息 ✓。
+      ② **本测试的前提不成立时要如实跳过**：它假设"不设环境 ⇒ 中文 Windows 用 GBK 写出来"，
+         但在 **cp1252**（西欧）locale 的 runner 上，子进程 `print('测试…')` 直接
+         **UnicodeEncodeError 崩掉（returncode=1）** —— 不是"编码不同"，是**根本印不出来** ✓
+         （CI 实测：`D:\\a\\...` 上就是 cp1252，见上一轮补的 stderr ✓）。
+         ⇒ 前提不成立 ⇒ `pytest.skip` 并**说明原因**，而不是假装测过 ✗
+         （本仓口径：宁可如实说"没测"，也不许把不适用的环境当成通过 ✓）
+        ② 那一半（设了 `PYTHONIOENCODING=utf-8`）**与环境 locale 无关**，
+          必须照常跑 —— 它守的正是"我们要钉的那个变量真管用" ✓
     """
     py = sys.executable
     out = tmp_path / "x.log"
@@ -74,21 +83,28 @@ def test_python_output_is_gbk_without_the_env_and_utf8_with_it(tmp_path):
     with open(out, "wb") as f:
         r1 = subprocess.run([py, "-c", code], stdout=f, stderr=subprocess.PIPE, check=False)
     raw = out.read_bytes()
-    assert raw.strip(), (
-        "子进程没写出东西，这条测试没在测东西 ✗\n"
-        f"  sys.executable = {py!r}\n"
-        f"  returncode     = {r1.returncode}\n"
-        f"  stderr         = {r1.stderr.decode('utf-8', 'replace').strip()[:500]!r}\n"
-        "  ⇒ 若 returncode 非 0 或 stderr 有内容，是**子进程本身**跑不起来（环境问题），\n"
-        "     不是编码链的问题 ✓；若 returncode==0 却无输出，看 stdout 是否被重定向规则吃掉 ✓"
-    )
-    # ② 设了 PYTHONIOENCODING=utf-8：必须是合法 UTF-8（且内容对得上 ✓）
+
+    # ② 设了 PYTHONIOENCODING=utf-8：必须是合法 UTF-8（且内容对得上 ✓）—— 与环境 locale 无关，先跑
     import os
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     with open(out, "wb") as f:
         subprocess.run([py, "-c", code], stdout=f, stderr=subprocess.DEVNULL, env=env, check=False)
     raw2 = out.read_bytes()
-    assert "测试-Flash对比" in raw2.decode("utf-8", "replace"), "设了 PYTHONIOENCODING 还是读不出中文 ✗"
+    assert "测试-Flash对比" in raw2.decode("utf-8", "replace"), (
+        "设了 PYTHONIOENCODING=utf-8 还是读不出中文 ✗ —— 这正是我们要钉的那条链断了 ✓"
+    )
+
+    # ① 的前提检查：子进程在**默认 locale** 下能不能印出中文
+    if not raw.strip():
+        err = r1.stderr.decode("utf-8", "replace")
+        pytest.skip(
+            "本环境的默认 locale 印不出中文，这条对照测不了 —— 不是产品缺陷，是环境前提不成立 ✓\n"
+            f"  sys.executable = {py!r}\n"
+            f"  returncode     = {r1.returncode}\n"
+            f"  stderr         = {err.strip()[:300]!r}\n"
+            "  （典型：locale=cp1252 的 CI runner ⇒ 子进程直接 UnicodeEncodeError，不写任何东西 ✓）\n"
+            "  ★ 另一半（PYTHONIOENCODING=utf-8 那条）已经跑过并通过：**我们要钉的变量是管用的** ✓"
+        )
     # ③ 结论：**必须靠环境变量** ✗ —— 中文 Windows 上两者字节不同 ✓
     if sys.platform == "win32":
         try:
