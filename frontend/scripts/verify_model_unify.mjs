@@ -11,6 +11,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const BASE = 'http://127.0.0.1:5173';
+//: 预设表里的条目行（用于从单一事实来源数出"应有几项"，而不是把数字写死在断言里）
+const ENTRY_KEY_RE = /^\s*\w+:\s*\{\s*provider:/gm;
 const SHOT = process.env.SHOT_DIR ?? path.join(os.tmpdir(), 'agent-shell-shots');  // 十四轮②：默认写系统临时目录——仓库证据图只能显式传参覆盖，杜绝静默改写
 mkdirSync(SHOT, { recursive: true });
 
@@ -63,14 +65,19 @@ try {
   // ═══ ③ 预设三元组（🔴3：provider 显式且正确，静态断言）═══
   // ★ A5（2026-10-04）：预设表合并成一份后是 8 项（设置页原来就 8 项，
   //   切换器只有 6 ⇒ Claude/Mock 切不回来）。逐项核 provider 显式写。
+  // ★ 2026-10-12：**项数不再写死** —— 原先三处断言都写死 8，
+  //   而 2026-10-10 加了第 9 项（本地 Bonsai 2）后本脚本没跟着改 ⇒
+  //   跑出三个 BAD（实测 items=9），把"脚本过期"误报成"界面坏了" ✗。
+  //   现在从**唯一事实来源** src/modelPresets.ts 数出应有项数 ⇒ 以后加项不用改这里 ✓
   const src = readFileSync(new URL('../src/modelPresets.ts', import.meta.url), 'utf-8');
   const want = { mimo: 'mimo', deepseek: 'deepseek', qwen: 'qwen', glm: 'glm', kimi: 'kimi',
                  anthropic: 'anthropic', ollama: 'ollama', mock: 'mock' };
   const tripleOK = Object.entries(want).every(([k, prov]) =>
     new RegExp(k + ':\\s*\\{\\s*provider:\\s*\'' + prov + '\'').test(src));
-  check('8 个预设 provider 显式且正确（ollama≠qwen）', tripleOK, '');
+  check('预设 provider 显式且正确（ollama≠qwen）', tripleOK, '');
+  const presetCount = (src.match(ENTRY_KEY_RE) ?? []).length;
 
-  // ═══ ④ 首页弹层：8 预设 + 友好名 ═══
+  // ═══ ④ 首页弹层：全部预设 + 友好名 ═══
   const heroBtn = page.locator('main .ctl-model').first();
   await heroBtn.waitFor({ state: 'visible', timeout: 5000 });
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -81,7 +88,7 @@ try {
   const items = pop.locator('.ctl-item');
   const n = await items.count();
   const firstText = (await items.first().textContent()) ?? '';
-  check('弹层 8 预设（两页同源）', n === 8, '实测 ' + n);
+  check('弹层预设项数 == 预设表项数（两页同源）', n === presetCount, `实测 ${n} / 表里 ${presetCount}`);
   check('友好名在前（MiMo（小米）…）', firstText.includes('MiMo（小米）'), firstText.slice(0, 24));
   await page.screenshot({ path: SHOT + '/49-首页-模型弹层.png' });
 
@@ -136,9 +143,9 @@ try {
       const r = pop.getBoundingClientRect();
       return { open: r.width > 0, items: [...pop.querySelectorAll('.ctl-item')].map((x) => x.textContent ?? '') };
     });
-    check('任务页同 8 预设（友好名）',
-      tvState.open && tvState.items.length === 8 && tvState.items[0].includes('MiMo（小米）'),
-      'open=' + tvState.open + ' items=' + tvState.items.length);
+    check('任务页同预设项数（友好名）',
+      tvState.open && tvState.items.length === presetCount && tvState.items[0].includes('MiMo（小米）'),
+      'open=' + tvState.open + ' items=' + tvState.items.length + ' / 表里 ' + presetCount);
     await page.screenshot({ path: SHOT + '/49-任务页-模型弹层.png' });
 
     // ═══ ⑧ 弹层互斥（十二轮 🔴2 回归断言）═══
@@ -188,12 +195,20 @@ try {
     navTexts: [...document.querySelectorAll('.nav-item')].map((el) => (el.innerText ?? '').trim()).filter(Boolean),
     controls: document.querySelectorAll('[role="dialog"] button, [role="dialog"] input, [role="dialog"] select').length,
   }));
-  const NAV_TITLES = ['常规', '模型设置', '视频生成', '执行环境', '技能', '项目', '自动化', '使用统计', '关于'];
+  // ★ 2026-10-12：这里原来写死「9 个分区」，而界面已经有 **11 个**
+  //   （2026-10-10 之后陆续加了「语音」「能力总览」，并把「视频生成」改成「出图 / 出视频」）
+  //   ⇒ 断言过期后被误读成"界面坏了" ✗。
+  //   现在改成：**逐个列出当前真实存在的分区标题，要求全部在位** ——
+  //   加分区不会误报，但**删掉/改名某个分区会立刻红**（这才是这条断言真正要守的东西 ✓）。
+  const NAV_TITLES = ['常规', '模型设置', '出图 / 出视频', '执行环境', '语音', '能力总览',
+                      '技能', '项目', '自动化', '使用统计', '关于'];
+  const missingTitles = NAV_TITLES.filter((t) => !setPage.navTexts.includes(t));
   const knownTitles = NAV_TITLES.filter((t) => setPage.navTexts.includes(t));
   check('设置页非白屏（侧栏含已知分区标题：常规/模型设置/关于）',
     knownTitles.includes('常规') && knownTitles.includes('模型设置') && knownTitles.includes('关于'),
     `命中的分区标题=${knownTitles.join('/')}（rootLen 仅参考=${setPage.rootLen}）`);
-  check('设置页 9 个分区在位', setPage.navItems === 9, 'nav-item=' + setPage.navItems);
+  check('设置页分区标题全部在位', missingTitles.length === 0,
+    `缺=${missingTitles.join('/') || '无'}（实测 nav-item=${setPage.navItems}）`);
   check('设置页 dialog/aria-modal 在位', setPage.dialog === true);
   check('设置页可见文本量 > 200（空壳盲区）', setPage.visibleTextLen > 200, 'innerText=' + setPage.visibleTextLen);
   check('设置页分区标题文本可见（渲染成功但内容为空的盲区）', setPage.navTexts.length >= 8, '有文本的分区=' + setPage.navTexts.length);

@@ -1574,11 +1574,13 @@ experiment(
 # ═══ Phase 2 ④（能力槽 + 提供者）：漂移必须被抓 ═══
 # 回滚态 = 把"对话"能力里的 mimo 声明删掉（= 代码能构造、声明表却没有）。
 # 期望：至少两条锚点红 —— ①"能构造的必须在表里" ②"当前配置选的必须在表里"。
+# ★ 2026-10-12：锚点文本跟着实现更新 —— 声明表里 mimo 的 models 补了 "mimo-v2.6-pro"
+#   （交接单待办 8：宣告的名字要与预设表一致）。实验名**保持不变**（红绿组按名字引用）。
 _CAPS = _TMP_ROOT / "backend" / "app" / "capabilities.py"
 experiment(
     "能力槽声明漂移（删掉 mimo 声明：代码能构造、表里没有）", _CAPS,
     """            "mimo": {"label": "小米 MiMo", "kind": "cloud", "key_env": "XIAOMI_MIMO_API_KEY",
-                     "models": ["mimo-v2.6-flash", "mimo-v2.5", "mimo-v2.5-pro"]},
+                     "models": ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro"]},
 """,
     "            # MUTANT: mimo 声明被删掉（代码仍能构造它）\n",
     "tests/test_capabilities.py",

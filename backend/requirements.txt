@@ -6,3 +6,9 @@ pydantic>=2.9
 python-multipart>=0.0.9
 # license.py Ed25519 验签（K1 整改：HMAC 对称密钥 → 非对称，产品只内置公钥）
 cryptography>=42
+# ★ 语音合成（app/tts.py 的 EdgeTTSBackend）—— 2026-10-12 实测缺口：
+#   此前它**不在**这里 ⇒ 完整版发布包的便携运行时装不上它 ⇒ 包里语音是坏的 ✗
+#   而便携包没有 venv 可退（那是开发机路径）⇒ 用户拿到的是个哑巴包 ✓
+#   实测：它连同 12 个依赖在 PyPI 上对 cp312/win_amd64 全部有二进制轮子（build_release 用 --only-binary）✓
+#   代价：完整包 +1.15MB（1.15MB 换"包里能说话"，值 ✓）
+edge-tts>=7.0

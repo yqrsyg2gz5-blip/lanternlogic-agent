@@ -32,6 +32,8 @@ SRC = ROOT / "frontend" / "src"
 PRESETS_TS = (SRC / "modelPresets.ts").read_text("utf-8")
 PICKER_TSX = (SRC / "components" / "ModelPicker.tsx").read_text("utf-8")
 SETTINGS_TSX = (SRC / "components" / "SettingsPanel.tsx").read_text("utf-8")
+#: ★ 2026-10-12：后端对外**宣告**的模型清单也在这条防漂移链上（见 ⑤ 段）
+CAPABILITIES_PY = (ROOT / "backend" / "app" / "capabilities.py").read_text("utf-8")
 
 ENTRY_RE = re.compile(
     r"^\s*(\w+): \{ provider: '([^']*)', model_name: '([^']*)', base_url: '([^']*)',"
@@ -147,3 +149,84 @@ def test_labels_clicked_by_browser_scripts_still_exist(needle):
     """verify_model_unify.mjs / verify_usage_badge.mjs 会按这些字点项——改名即红。"""
     labels = [p["label"] for p in _entries().values()]
     assert needle in labels, f"切换器标签「{needle}」不在了（浏览器验证脚本会点空）：{labels}"
+
+
+# ═══ ⑤ 防漂移：后端 `capabilities.py` 对外**宣告**的模型名也要跟得上（★ 2026-10-12）═══
+
+def test_backend_capabilities_do_not_advertise_retired_models():
+    """★ 2026-10-12 实测抓到的**第二处**"牌子/名字对不上"（交接单 A 类第 8 条同源）：
+
+        `app/capabilities.py` 的 chat 段对外宣告（界面按它渲染可选项）：
+
+            deepseek: models: ["deepseek-chat", "deepseek-reasoner"]
+            mimo:     models: ["mimo-v2.6-flash", "mimo-v2.5", "mimo-v2.5-pro"]
+            qwen:     models: ["qwen-max", "qwen-plus", "qwen-turbo"]
+
+        而**单一事实来源**（frontend/src/modelPresets.ts）说的是：
+
+            deepseek: deepseek-flash / deepseek-v4-pro
+            mimo:     v2.6-flash / v2.6-pro / v2.5 / v2.5-pro / v2.5-asr / v2.5-tts
+
+        ⇒ 两边宣告的模型名**不是一套** ✗；`deepseek-chat` 更是**已弃用旧名**
+          （同文件 ③ 刚钉过：新用户点它很可能起不来 ✓）
+        ⇒ 这类错最伤第一次体验：用户**照界面上写的名字选，选到一个起不来的** ✓
+    """
+    for old in ("deepseek-chat", "deepseek-reasoner"):
+        assert f'"{old}"' not in CAPABILITIES_PY, (
+            f"capabilities.py 还在对外宣告已弃用旧名 {old} ✗\n"
+            "  ⇒ 界面会把它列成可选项，用户选了起不来 ✓\n"
+            "  当前名字见 frontend/src/modelPresets.ts ✓"
+        )
+
+
+def test_backend_capabilities_agree_with_preset_defaults():
+    """每个 preset 的 model_name 必须出现在 capabilities 宣告的该 provider 清单里。
+
+    两边只要各改一次就会漂移 —— 这就是 A5 那条"三处各写一份"的老病 ✓
+    """
+    cap = CAPABILITIES_PY
+    missing: dict[str, str] = {}
+    for key, p in _entries().items():
+        prov, model = p["provider"], p["model_name"]
+        if prov in ("mock",):
+            continue
+        # 在 capabilities 里找 "prov": { ... "models": [...] } 这一段
+        m = re.search(rf'"{re.escape(prov)}":\s*\{{[^}}]*?"models":\s*\[([^\]]*)\]', cap, re.S)
+        if not m:
+            continue                      # capabilities 没宣告这家 ⇒ 不归它管
+        listed = re.findall(r'"([^"]+)"', m.group(1))
+        if listed and model not in listed:
+            missing[prov] = f"preset 默认 {model!r} 不在 capabilities 的 {listed} 里"
+    assert not missing, (
+        "capabilities.py 宣告的模型清单与预设默认值不一致 ✗\n  " + "\n  ".join(
+            f"{k}: {v}" for k, v in missing.items())
+        + "\n  ⇒ 界面按 capabilities 渲染，用户会选到预设里不存在的名字 ✓"
+    )
+
+
+def test_backend_capabilities_key_env_matches_presets():
+    """★ 2026-10-12 实测抓到的**第三处**漂移：Key 环境变量名两边不一致。
+
+    实测（修前）：`capabilities.py` 给 kimi 宣告的是 `MOONSHOT_API_KEY`，
+    而预设表（用户实际存 Key 的地方）用的是 `KIMI_API_KEY` ✗
+
+    ⇒ 危害不是"显示不准"这么轻：
+      · 用户按预设存了 `KIMI_API_KEY` ✓ 而能力表去查 `MOONSHOT_API_KEY` ⇒ **报"没 Key"** ✓
+      · 两张表各自说一个"Key 存哪" ⇒ 换服务商时把 Key 存错格子 ✓（设置页那行只读
+        `key_env` 的注释就写着这个教训 ✓）
+    """
+    cap = CAPABILITIES_PY
+    bad: dict[str, str] = {}
+    for key, p in _entries().items():
+        prov, env = p["provider"], p["key_env"]
+        m = re.search(rf'"{re.escape(prov)}":\s*\{{[^}}]*?"key_env":\s*("([^"]*)"|None)', cap, re.S)
+        if not m:
+            continue
+        declared = m.group(2) or None
+        if declared != (env or None):
+            bad[prov] = f"capabilities 宣告 {declared!r}，预设表用 {env!r}"
+    assert not bad, (
+        "capabilities.py 的 key_env 与预设表不一致 ✗\n  " + "\n  ".join(
+            f"{k}: {v}" for k, v in bad.items())
+        + "\n  ⇒ 用户按一处存 Key、另一处查不到，会误报『没 Key』✓"
+    )

@@ -188,19 +188,19 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
         "label": "对话模型（大脑）",
         "providers": {
             "mimo": {"label": "小米 MiMo", "kind": "cloud", "key_env": "XIAOMI_MIMO_API_KEY",
-                     "models": ["mimo-v2.6-flash", "mimo-v2.5", "mimo-v2.5-pro"]},
+                     "models": ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.5", "mimo-v2.5-pro"]},
             "deepseek": {"label": "DeepSeek", "kind": "cloud", "key_env": "DEEPSEEK_API_KEY",
-                         "models": ["deepseek-chat", "deepseek-reasoner"]},
+                         "models": ["deepseek-flash", "deepseek-v4-pro"]},
             "qwen": {"label": "通义千问", "kind": "cloud", "key_env": "DASHSCOPE_API_KEY",
                      "models": ["qwen-max", "qwen-plus", "qwen-turbo"]},
             "glm": {"label": "智谱 GLM", "kind": "cloud", "key_env": "GLM_API_KEY",
-                    "models": ["glm-4-plus", "glm-4-flash"]},
-            "kimi": {"label": "Kimi", "kind": "cloud", "key_env": "MOONSHOT_API_KEY",
-                     "models": ["moonshot-v1-8k", "moonshot-v1-32k"]},
+                    "models": ["glm-5.3-flash", "glm-5.3", "glm-4.7-flash"]},
+            "kimi": {"label": "Kimi", "kind": "cloud", "key_env": "KIMI_API_KEY",
+                     "models": ["kimi-k2.6", "kimi-k3"]},
             "claude": {"label": "Claude", "kind": "cloud", "key_env": "ANTHROPIC_API_KEY",
                        "models": ["claude-sonnet-4-5", "claude-opus-4-1"]},
             "ollama": {"label": "本地模型（Ollama）", "kind": "local", "key_env": None,
-                       "models": ["qwen3:0.6b", "qwen3:1.7b", "qwen3:1.7b-q4_K_M"]},
+                       "models": ["qwen3.5:9b", "qwen3:0.6b", "qwen3:1.7b", "qwen3:1.7b-q4_K_M"]},
             # ★ 2026-10-10（用户点名要接的本地模型 ✓）：
             #   Bonsai 2 27B —— llama.cpp 起在 127.0.0.1:8080（桌面「Bonsai2 本地模型」✓）
             #   kind=local（无需 Key ✓）· 64K 上下文 · 带视觉

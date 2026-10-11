@@ -14,15 +14,23 @@
     要么 `pytest.importorskip(...)`（缺了如实跳过 ✓ 与"缺件就说缺件"同口径），
     要么放进函数体里再 try/except ✓
 
-★ 为什么只盯这几个包：它们**不在** `backend/requirements.txt` 里，
-  是随本地引擎/模型一起装的（MeloTTS / 千问3-TTS / 本地 ASR / 本地出图 …）。
+★ 为什么只盯这几个包：它们**不一定**在 `backend/requirements.txt` 里，
+  而是随本地引擎/模型一起装的（MeloTTS / 千问3-TTS / 本地 ASR / 本地出图 …）。
+
+★ 2026-10-12 更新：`edge_tts` **已经进了** `backend/requirements.txt`
+  （为了修"完整版发布包里语音是坏的"——便携运行时只装这份清单 ⇒ 以前装不上它 ✗，见
+  `test_release_runtime_deps.py`）。它仍留在这个名单里是**故意的**：
+  这份守卫测的是"导入纪律"（顶层裸导入会在缺件环境炸掉整轮收集 ✓），
+  而 `edge_tts` 在 `app/tts.py` 里本来就写在 `try/except ImportError` 里（可选后端语义 ✓），
+  这条纪律与它是否进清单无关 ⇒ **留着守望，不删** ✓
 """
 from __future__ import annotations
 
 import ast
 import pathlib
 
-#: 可选依赖（不在 requirements.txt 里 ⇒ CI 上不存在 ⇒ 顶层裸导入必炸）
+#: 可选/重依赖（顶导会炸）：edge_tts 已于 2026-10-12 进 requirements.txt，
+#: 但**留着守望**（它仍是可选后端，有 guard；且这份名单防的是"顶层裸导入"这个动作本身）
 OPTIONAL = frozenset({
     "nltk", "torch", "torchaudio", "edge_tts", "pyttsx3", "melo", "qwen_tts",
     "faster_whisper", "modelscope", "soundfile", "imageio_ffmpeg", "fastembed",

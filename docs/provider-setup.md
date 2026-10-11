@@ -30,7 +30,7 @@ $env:<环境变量名> = "<你的 API Key>"
 ### 1. DeepSeek（推荐——性价比最高的国产模型）
 
 ```json
-{ "provider": "deepseek", "model_name": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key_env": "DEEPSEEK_API_KEY" }
+{ "provider": "deepseek", "model_name": "deepseek-flash", "base_url": "https://api.deepseek.com/v1", "api_key_env": "DEEPSEEK_API_KEY" }
 ```
 - **Key 获取**：https://platform.deepseek.com → API Keys → 创建
 - **价格**：约 ¥1/百万输入 token（最便宜的旗舰级模型之一）
@@ -39,7 +39,7 @@ $env:<环境变量名> = "<你的 API Key>"
 ### 2. 通义千问 Qwen（阿里云）
 
 ```json
-{ "provider": "qwen", "model_name": "qwen-max", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key_env": "QWEN_API_KEY" }
+{ "provider": "qwen", "model_name": "qwen-max", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key_env": "DASHSCOPE_API_KEY" }
 ```
 - **Key 获取**：https://dashscope.console.aliyun.com → API-KEY 管理
 - **价格**：¥2-40/百万 token（按模型档次）
@@ -49,19 +49,19 @@ $env:<环境变量名> = "<你的 API Key>"
 ### 3. 智谱 GLM
 
 ```json
-{ "provider": "glm", "model_name": "glm-4-flash", "base_url": "https://open.bigmodel.cn/api/paas/v4", "api_key_env": "GLM_API_KEY" }
+{ "provider": "glm", "model_name": "glm-5.3-flash", "base_url": "https://open.bigmodel.cn/api/paas/v4", "api_key_env": "GLM_API_KEY" }
 ```
 - **Key 获取**：https://open.bigmodel.cn → API Keys
-- **价格**：GLM-4-Flash **免费**；GLM-4-Plus ¥50/百万
+- **价格**：GLM-4.7-Flash **免费**；GLM-5.3 系列按官方定价页
 - **工具调用**：✅ | **流式**：✅
 
 ### 4. Kimi（月之暗面）
 
 ```json
-{ "provider": "kimi", "model_name": "moonshot-v1-8k", "base_url": "https://api.moonshot.cn/v1", "api_key_env": "KIMI_API_KEY" }
+{ "provider": "kimi", "model_name": "kimi-k2.6", "base_url": "https://api.moonshot.cn/v1", "api_key_env": "KIMI_API_KEY" }
 ```
 - **Key 获取**：https://platform.moonshot.cn → API Keys
-- **价格**：¥12/百万 token（8k 上下文）
+- **价格**：见官方定价页（k2.6 / k3 档位不同）
 - **工具调用**：✅ | **流式**：✅
 
 ### 5. 小米 MiMo

@@ -37,7 +37,11 @@ export const MODEL_PRESETS: Record<string, ModelPreset> = {
   //   moonshot-v1-8k —— 那些是**旧名**，新用户照着选很可能起不来 ✗）。
   //   官方价也一并收进了后端 `app/pricing.py::OFFICIAL`（含来源与更新日期 ✓）。
   deepseek: { provider: 'deepseek', model_name: 'deepseek-flash', base_url: 'https://api.deepseek.com/v1', key_env: 'DEEPSEEK_API_KEY', label: 'DeepSeek', full_label: 'DeepSeek（深度求索）', desc: '推理强，缓存折扣大省钱（空闲时段半价）', models: 'deepseek-flash / deepseek-v4-pro（官方页 2026-10-06 核对）' },
-  qwen: { provider: 'qwen', model_name: 'qwen-max', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key_env: 'QWEN_API_KEY', label: '通义千问', full_label: '通义千问（阿里）', desc: '全家桶：还能做视频/作图/语音', models: 'qwen-max / plus / turbo / flash / qwen3-14b…（国内价见官方定价页）' },
+  // ★ 2026-10-12：key_env 由 'QWEN_API_KEY' 改为 'DASHSCOPE_API_KEY' —— 同一个 Key 在代码别处
+  //   已经用这个名字（app/imagegen.py 出图、app/kb.py 知识库向量都读 DASHSCOPE_API_KEY ✓）。
+  //   两边不一致的后果实测：用户往 QWEN_API_KEY 存了 Key ⇒ 出图/知识库**报"没 Key"** ✓
+  //   现在两处同名，一个 Key 同时管大脑/出图/知识库 ✓
+  qwen: { provider: 'qwen', model_name: 'qwen-max', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', key_env: 'DASHSCOPE_API_KEY', label: '通义千问', full_label: '通义千问（阿里）', desc: '全家桶：还能做视频/作图/语音', models: 'qwen-max / plus / turbo / flash / qwen3-14b…（国内价见官方定价页）' },
   glm: { provider: 'glm', model_name: 'glm-5.3-flash', base_url: 'https://open.bigmodel.cn/api/paas/v4', key_env: 'GLM_API_KEY', label: '智谱 GLM', full_label: '智谱 GLM', desc: '免费档多（glm-4.7-flash 官方标价免费）', models: 'glm-5.3 / 5.3-flash / 5.3-flashx / 5.2 / 5 / 4.7-flash（免费）（官方页 2026-10-06 核对）' },
   kimi: { provider: 'kimi', model_name: 'kimi-k2.6', base_url: 'https://api.moonshot.cn/v1', key_env: 'KIMI_API_KEY', label: 'Kimi', full_label: 'Kimi（月之暗面）', desc: '长文本见长', models: 'kimi-k3 / k2.7-code / k2.6（国内站价 ¥6.5/¥27，k3 ¥20/¥100）' },
   anthropic: { provider: 'anthropic', model_name: 'claude-sonnet-4-20250514', base_url: 'https://api.anthropic.com', key_env: 'ANTHROPIC_API_KEY', label: 'Claude', full_label: 'Claude（Anthropic）', desc: '海外旗舰，需海外支付', models: 'claude-sonnet-4 / opus-4' },

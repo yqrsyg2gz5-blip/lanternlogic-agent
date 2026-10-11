@@ -61,15 +61,27 @@ def test_python_output_is_gbk_without_the_env_and_utf8_with_it(tmp_path):
 
     为什么值得真跑一次：这条链上"看起来设了编码"和"真的设了"差一个字节就会花码 ✓
     （本仓栽过：`chcp 65001` 看着像"已经 UTF-8 了"✗）。
+
+    ★ 2026-10-12 修：原版把子进程的 stderr 丢进 DEVNULL，
+      一旦子进程**根本没跑起来**，失败信息只有一句 `assert b''`，
+      定位不到原因 ✗（CI 实测踩到：`D:\\a\\...` 上红了这一条，而现象完全看不出为什么 ✓）。
+      现在把 returncode / stderr 一起收进断言消息 —— 失败时**直接告诉你子进程怎么了** ✓。
     """
     py = sys.executable
     out = tmp_path / "x.log"
     code = "print('测试-Flash对比')"
     # ① 不设环境（= 老做法）：非交互 stdout 用 locale 编码 ⇒ 中文 Windows 上是 GBK
     with open(out, "wb") as f:
-        subprocess.run([py, "-c", code], stdout=f, stderr=subprocess.DEVNULL, check=False)
+        r1 = subprocess.run([py, "-c", code], stdout=f, stderr=subprocess.PIPE, check=False)
     raw = out.read_bytes()
-    assert raw.strip(), "子进程没写出东西，这条测试没在测东西 ✗"
+    assert raw.strip(), (
+        "子进程没写出东西，这条测试没在测东西 ✗\n"
+        f"  sys.executable = {py!r}\n"
+        f"  returncode     = {r1.returncode}\n"
+        f"  stderr         = {r1.stderr.decode('utf-8', 'replace').strip()[:500]!r}\n"
+        "  ⇒ 若 returncode 非 0 或 stderr 有内容，是**子进程本身**跑不起来（环境问题），\n"
+        "     不是编码链的问题 ✓；若 returncode==0 却无输出，看 stdout 是否被重定向规则吃掉 ✓"
+    )
     # ② 设了 PYTHONIOENCODING=utf-8：必须是合法 UTF-8（且内容对得上 ✓）
     import os
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
