@@ -35,6 +35,7 @@ from .config import load_config
 from .config import config_path  # 写回路径与读同源（测试隔离的根）
 from .executors import create_executor
 from .loop import TaskRun, normalize_history
+from .winconsole import NO_WINDOW_CREATIONFLAGS
 from .providers import create_provider
 from .tts import get_tts_backend
 from .skills import SkillRegistry
@@ -5295,6 +5296,7 @@ async def _to_wav(audio_path: Path) -> Path:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", str(audio_path), "-ar", "16000", "-ac", "1", str(out),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW_CREATIONFLAGS,
         )
         await asyncio.wait_for(proc.wait(), timeout=30)
         if proc.returncode == 0 and out.exists():

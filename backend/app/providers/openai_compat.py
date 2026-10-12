@@ -142,6 +142,44 @@ class OpenAICompatProvider(ModelProvider):
                 msgs.append({k: v for k, v in m.items() if not str(k).startswith("_")})
         return msgs
 
+    #: 本地推理服务的常见地址特征 —— 用于判断"要不要关思考"
+    _LOCAL_HINTS = ("127.0.0.1", "localhost", "0.0.0.0", "[::1]", "::1")
+
+    def _is_local_endpoint(self) -> bool:
+        """这个 base_url 是不是本机推理服务（llama.cpp / ollama / LM Studio 等）。"""
+        u = str(self.base_url or "").lower()
+        return any(h in u for h in self._LOCAL_HINTS)
+
+    def _build_body(self, history: list[dict[str, Any]], tools: list[dict[str, Any]],
+                    *, enable_thinking: bool | None = None) -> dict[str, Any]:
+        """组装请求体（**发请求的唯一一处**，便于测试与统一修补）。
+
+        ★ 2026-10-12（本地模型吐空回复的根治，实测）：
+          本地模板（如 Qwen 系）在 `add_generation_prompt` 时会**默认打开 ` thinking`**。
+          实测该模型（Bonsai 27B / GGUF）会在思考块里**绕圈绕到 token 用光**
+          （`finish_reason=length`、`content` 为空串）⇒ 应用收到空回复 ⇒
+          10 分钟无进展被看门狗取消 ✗（用户真机 task_20261012_3aaa5fc1 两次都这样）
+
+          实测对比（同一提示 × 5 次）：
+            默认（思考开）→ **空 3/5** ✗
+            显式关思考     → **空 0/5** ✓（内容正常、耗时更短、token 更省）
+
+          ⇒ 对**本地**端点默认附带 `chat_template_kwargs.enable_thinking = False` ✓
+          服务端不认这个字段时会忽略（Jinja 里就是 undefined）⇒ 安全 ✓
+          **云端不附**（它用不上，属于污染请求；见 tests）✓
+        """
+        body: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": self._assemble(history),
+            "tools": tools,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        want = (not self._is_local_endpoint()) if enable_thinking is None else bool(enable_thinking)
+        if self._is_local_endpoint():
+            body["chat_template_kwargs"] = {"enable_thinking": bool(want)}
+        return body
+
     async def next_turn(
         self,
         task_input: str,
@@ -149,13 +187,7 @@ class OpenAICompatProvider(ModelProvider):
         tools: list[dict[str, Any]],
         on_delta: Callable[[str], None] | None = None,
     ) -> AssistantTurn:
-        body = {
-            "model": self.model_name,
-            "messages": self._assemble(history),
-            "tools": tools,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
+        body = self._build_body(history, tools)
         # ★★ DeepSeek 思考模式的**硬要求**（官方文档原文 ✓ 2026-10-09 用户实测 400 后查证 ✓）：
         #   「携带了 tools 参数的请求，在后续所有请求中，必须**完整回传** reasoning_content 给 API
         #     ——**即使该轮模型未实际进行工具调用**。若未正确回传，API 会返回 400 报错。」

@@ -21,6 +21,7 @@ import queue
 import subprocess
 import threading
 import time
+from .winconsole import NO_WINDOW_CREATIONFLAGS
 from typing import Any
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -115,6 +116,7 @@ class McpServer:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,  # server 的日志别混进协议流
             env=env,
+            **NO_WINDOW_CREATIONFLAGS,
         )
         assert self._proc.stdout is not None
 

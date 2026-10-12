@@ -23,6 +23,7 @@ from urllib.parse import urljoin
 from .base import ExecResult, Executor
 from ..mcp import _CHILD_ENV_KEYS
 from ..ssrf import SsrfBlocked, assert_public_url, browser_request_allowed, recheck_still_public
+from ..winconsole import NO_WINDOW_CREATIONFLAGS
 
 # 二十六轮第 7 批第 3 处：_web_fetch 的响应体硬上限（按【已读字节数】判，
 # 不依赖 content-length——无 CL 的 chunked 响应此前完全不受限）。
@@ -69,6 +70,7 @@ async def _docker_kill(cname: str) -> None:
         kp = await asyncio.create_subprocess_exec(
             "docker", "kill", cname,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW_CREATIONFLAGS,
         )
         try:
             await asyncio.wait_for(kp.wait(), timeout=10)
@@ -506,6 +508,7 @@ class LocalExecutor(Executor):
             proc = await asyncio.create_subprocess_exec(
                 _sys.executable, '-m', 'py_compile', str(f),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                **NO_WINDOW_CREATIONFLAGS,
             )
             out_bytes, _ = await proc.communicate()
             if proc.returncode == 0:
@@ -517,6 +520,7 @@ class LocalExecutor(Executor):
                 proc = await asyncio.create_subprocess_exec(
                     'node', '--check', str(f),
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    **NO_WINDOW_CREATIONFLAGS,
                 )
                 out_bytes, _ = await proc.communicate()
                 if proc.returncode == 0:
@@ -607,6 +611,7 @@ class LocalExecutor(Executor):
             *docker_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            **NO_WINDOW_CREATIONFLAGS,
         )
         try:
             raw, _ = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
@@ -651,6 +656,7 @@ class LocalExecutor(Executor):
             proc = await asyncio.create_subprocess_exec(
                 "docker", "info", "--format", "ok",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                **NO_WINDOW_CREATIONFLAGS,
             )
             await asyncio.wait_for(proc.wait(), timeout=15)
             self._docker_ok = proc.returncode == 0
@@ -664,6 +670,7 @@ class LocalExecutor(Executor):
         proc = await asyncio.create_subprocess_exec(
             "docker", "image", "inspect", self.sandbox_image,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW_CREATIONFLAGS,
         )
         await asyncio.wait_for(proc.wait(), timeout=15)
         if proc.returncode == 0:
@@ -673,6 +680,7 @@ class LocalExecutor(Executor):
         pull = await asyncio.create_subprocess_exec(
             "docker", "pull", self.sandbox_image,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            **NO_WINDOW_CREATIONFLAGS,
         )
         try:
             await asyncio.wait_for(pull.wait(), timeout=300)
@@ -713,6 +721,7 @@ class LocalExecutor(Executor):
                     "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
                     str(out_path),
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    **NO_WINDOW_CREATIONFLAGS,
                 )
                 try:
                     stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
@@ -737,6 +746,7 @@ class LocalExecutor(Executor):
                 "ffprobe", "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(out_path),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                **NO_WINDOW_CREATIONFLAGS,
             )
             stdout, _ = await probe.communicate()
             secs = float(stdout.decode().strip())
@@ -766,7 +776,7 @@ class LocalExecutor(Executor):
                 return cand
         try:
             out = subprocess.run(["where", "bash"], capture_output=True, text=True, timeout=10,
-                                 env=env).stdout.splitlines()
+                                 env=env, **NO_WINDOW_CREATIONFLAGS).stdout.splitlines()
         except Exception:
             return None
         for line in out:
@@ -794,6 +804,7 @@ class LocalExecutor(Executor):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
+                **NO_WINDOW_CREATIONFLAGS,
             )
         else:  # 平台默认 shell（Windows = cmd.exe）
             proc = await asyncio.create_subprocess_shell(
@@ -802,6 +813,7 @@ class LocalExecutor(Executor):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
+                **NO_WINDOW_CREATIONFLAGS,
             )
         try:
             raw, _ = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)

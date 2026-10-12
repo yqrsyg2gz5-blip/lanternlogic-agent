@@ -27,6 +27,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from .winconsole import NO_WINDOW_CREATIONFLAGS
 from functools import lru_cache
 
 _PROBE_TIMEOUT = 8
@@ -38,7 +39,8 @@ def _works(path: str | None) -> bool:
         return False
     try:
         p = subprocess.run([path, "-c", "import encodings,sys;print(sys.version.split()[0])"],
-                           capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+                           capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+                           **NO_WINDOW_CREATIONFLAGS)
     except (OSError, subprocess.SubprocessError):
         return False
     return p.returncode == 0 and bool((p.stdout or "").strip())
@@ -67,7 +69,8 @@ def python_cmd() -> tuple[str | None, str]:
         argv = [key, "-3"] if key.endswith(("py", "py.exe")) else [key]
         try:
             p = subprocess.run(argv + ["-c", "import encodings,sys;print(sys.version.split()[0])"],
-                               capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+                               capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+                               **NO_WINDOW_CREATIONFLAGS)
         except (OSError, subprocess.SubprocessError):
             continue
         if p.returncode == 0 and (p.stdout or "").strip():
@@ -90,7 +93,8 @@ def facts(workdir: str = "") -> str:
     if node:
         try:
             v = subprocess.run([node, "--version"], capture_output=True, text=True,
-                               timeout=_PROBE_TIMEOUT).stdout.strip()
+                               timeout=_PROBE_TIMEOUT,
+                               **NO_WINDOW_CREATIONFLAGS).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             v = ""
         lines.append(f"· Node：`{node}`{('（' + v + '）') if v else ''}" + (f"；npm：`{npm}`" if npm else "；**没有 npm**"))

@@ -42,6 +42,8 @@ import ctypes.wintypes as wt
 import subprocess
 import sys
 
+from ..winconsole import NO_WINDOW_CREATIONFLAGS
+
 __all__ = ["available", "run_in_sandbox", "SandboxUnavailable"]
 
 _IS_WIN = sys.platform == "win32"
@@ -171,11 +173,10 @@ def run_in_sandbox(command: str, workdir, timeout: float = 60.0, *,
     job = _make_job(memory_mb, timeout, active_procs)
     proc = None
     try:
-        creationflags = 0x08000000 if _IS_WIN else 0   # CREATE_NO_WINDOW
         proc = subprocess.Popen(
             command, shell=True, cwd=workdir,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            env=env, creationflags=creationflags,
+            env=env, **NO_WINDOW_CREATIONFLAGS,
         )
         # 把进程放进作业对象。
         # ★ 访问权限必须含 PROCESS_SET_QUOTA(0x0100) + PROCESS_TERMINATE(0x0001)

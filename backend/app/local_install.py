@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+from .winconsole import NO_WINDOW_CREATIONFLAGS
 from typing import Any
 
 # 只认这两个档（与 asr.LOCAL_MODELS 对齐 ✓）
@@ -79,6 +80,7 @@ def _run(cmd: list[str], *, cwd: pathlib.Path | None = None, watch: pathlib.Path
             cmd, cwd=str(cwd) if cwd else None, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace", bufsize=1,
+            **NO_WINDOW_CREATIONFLAGS,
         )
     except Exception as e:                                  # noqa: BLE001
         _log(f"✗ 起不来：{type(e).__name__}: {e}")

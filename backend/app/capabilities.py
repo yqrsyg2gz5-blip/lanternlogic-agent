@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import os
+from .winconsole import NO_WINDOW_CREATIONFLAGS
 from typing import Any
 
 # ── 本地模型分档（ASR 用）：显存/内存 → 推荐档位 ────────────────────
@@ -143,7 +144,8 @@ def _detect_hardware() -> tuple[float, float, str]:
         import subprocess
         r = subprocess.run(["nvidia-smi", "--query-gpu=memory.total",
                             "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=6)
+                           capture_output=True, text=True, timeout=6,
+                           **NO_WINDOW_CREATIONFLAGS)
         if r.returncode == 0 and r.stdout.strip():
             vram = round(float(r.stdout.strip().splitlines()[0]) / 1024, 1)
             how.append("nvidia-smi")
