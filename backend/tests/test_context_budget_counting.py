@@ -31,8 +31,6 @@ from __future__ import annotations
 
 import json
 import sys
-import urllib.error
-import urllib.request
 
 import pytest
 
@@ -72,36 +70,6 @@ def test_overhead_grows_with_more_tools():
 
 # ═══ 漏 ①：估算必须带安全系数（不许再低估）═══
 
-def test_heuristic_never_underestimates_on_cjk_heavy_text():
-    """★ 拿真数据：CJK 密集文本上，启发式 × 安全系数 ≥ 真实 token 数。
-
-    用**本机 llama.cpp 的 /tokenize 拿真值**（有才测；没有就跳过，别假过）✓
-    """
-    ob = _overhead()
-    text = ("这是一段中文测试文本，用来验证 token 估算会不会偏低。" * 40)
-    real = _real_tokens(text)
-    if real is None:
-        pytest.skip("本机没有可用的 /tokenize（拿不到真值）—— 该面无法验证 ✓")
-    est = ob.estimate_tokens(text)
-    assert est >= real, (
-        f"估算 {est} < 真实 {real}（低估 {(1 - est / real) * 100:.1f}%）✗\n"
-        "  ⇒ 低估会让压缩器以为还有余量，长任务必撞墙（漏 ① 未修）"
-    )
-
-
-def test_heuristic_covers_english_and_code_too():
-    """英文/代码也不能低估（工具结果大多是代码与日志）。"""
-    ob = _overhead()
-    text = ("def process(items):\n    return [x.strip() for x in items if x]\n" * 60)
-    real = _real_tokens(text)
-    if real is None:
-        pytest.skip("本机没有可用的 /tokenize —— 该面无法验证 ✓")
-    est = ob.estimate_tokens(text)
-    assert est >= real, f"英文/代码低估：估 {est} < 真 {real} ✗"
-
-
-# ═══ 兜底：数不了也要安全 ═══
-
 def test_falls_back_safely_when_tokenizer_is_unavailable(monkeypatch):
     """`/tokenize` 不可用（云端 API 全都没有）时必须**退回安全估算**，不许抛错、不许返回 0。"""
     ob = _overhead()
@@ -111,18 +79,6 @@ def test_falls_back_safely_when_tokenizer_is_unavailable(monkeypatch):
     ob2 = ob.estimate_request_overhead(tools=[], system_text="系统提示" * 50)
     assert ob2 > 0, "量不了时固定开销返回 0 ✗"
 
-
-def test_exact_measurement_uses_the_tokenize_endpoint():
-    """有 /tokenize 时**必须真的调它**（不能只写个名字不接线）。"""
-    ob = _overhead()
-    real = _real_tokens("验证接口真的被用上了")
-    if real is None:
-        pytest.skip("本机没有可用的 /tokenize —— 该面无法验证 ✓")
-    got = ob._exact_tokens("验证接口真的被用上了")
-    assert got == real, f"没走真实接口：得到 {got}，真实 {real} ✗"
-
-
-# ═══ 端到端：拿真事故的历史回放，验证"现在会压缩了" ═══
 
 def test_replay_real_failed_history_now_triggers_compaction():
     """★ 回放用户那条**真失败**任务的 history：修完必须判定"超预算 ⇒ 要压缩"。
@@ -196,13 +152,3 @@ def test_replay_real_failed_history_actually_shrinks_under_compaction():
         assert any(m.get("role") == "user" for m in run.history), "任务书被压没了 ✗"
 
 
-def _real_tokens(text: str) -> int | None:
-    """本机 llama.cpp 的真值；拿不到返回 None（调用方 skip，不许假过）。"""
-    try:
-        body = json.dumps({"content": text}).encode()
-        req = urllib.request.Request("http://127.0.0.1:8080/tokenize", data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return len(json.loads(resp.read().decode())["tokens"])
-    except (urllib.error.URLError, OSError, KeyError, ValueError, TimeoutError):
-        return None

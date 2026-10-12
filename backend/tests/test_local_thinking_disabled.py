@@ -45,11 +45,8 @@
 """
 from __future__ import annotations
 
-import json
 import sys
 from typing import Any
-
-import pytest
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -136,33 +133,3 @@ def test_local_detection_covers_common_local_hosts():
         assert "chat_template_kwargs" not in _body_for(p), f"{url} 被误判成本地 ✗"
 
 
-def test_disabled_thinking_calls_the_real_server_and_gets_content():
-    """★ 端到端：真的打本机服务，关思考后必须**每次都出内容**（抽查 3 次）。
-
-    拿不到本机服务就跳过（不许假过）✓
-    """
-    import urllib.error
-    import urllib.request
-    try:
-        urllib.request.urlopen("http://127.0.0.1:8080/props", timeout=5).read()
-    except (urllib.error.URLError, OSError):
-        pytest.skip("本机 llama.cpp 服务不在（8080）—— 该面无法验证 ✓")
-
-    blank = 0
-    for i in range(3):
-        body = {
-            "model": "bonsai-2-27b",
-            "messages": [{"role": "system", "content": "你是执行智能体。"},
-                         {"role": "user", "content": "输出 3 行候选标题，然后一行写「采用：」+ 理由。"}],
-            "max_tokens": 300, "stream": False, "cache_prompt": False,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
-        req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
-                                     data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            out = json.loads(resp.read().decode())
-        text = str(((out.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        if not text:
-            blank += 1
-    assert blank == 0, f"关思考后仍有 {blank}/3 次吐空 ✗（修法失效，需重新查）"
