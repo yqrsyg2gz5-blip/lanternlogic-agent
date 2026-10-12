@@ -1,6 +1,6 @@
 这份副本由 scripts/export_public.py 导出 ✓
 源仓库：D:\AI\agent-shell
-文件数：457（已排除 67 个内部文件 ✓）
+文件数：459（已排除 67 个内部文件 ✓）
 
 下一步：
   cd <这个目录> && git init && git add -A && git commit -m 'first public release'
