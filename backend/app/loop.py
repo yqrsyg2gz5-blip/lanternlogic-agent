@@ -19,6 +19,7 @@ from .bus import EventBus
 from .executors.base import ExecResult, Executor
 from .redact import redact_deep as _redact_deep, redact_text_tool
 from . import permissions      # ★ 2026-10-07：按角色限权（只读角色不许改已有的东西 ✓）
+from . import context_budget   # ★ 2026-10-12：上下文计数（精确优先/绝不低估）—— 长任务撞窗口修复
 from . import humanize         # ★★ 2026-10-11：审批卡片说人话（规则表 ✓ 不调模型 ✗）
 from . import audit            # ★★ A-4（2026-10-07）：**任务起止**的"止"记进审计账本 ✓
 from .schemas import EventEnvelope, TaskSummary
@@ -1194,6 +1195,42 @@ class TaskRun:
 
     # ---------- 上下文预算 ----------
 
+    def _system_overhead_text(self) -> str:
+        """给"固定开销"用的**基础系统提示**文本（★ 2026-10-12 长任务撞窗口修复）。
+
+        只取 provider 里那份**基础**提示：provider 每次请求都要自己拼上去
+        （见 `openai_compat.build_messages` / `anthropic.build_messages`），
+        而**注入的 system 消息本来就在 history 里**（`inject_system` / 技能注入），
+        已经在 `count_messages` 里算过 ⇒ **这里再算一次就是重复计数** ✗
+
+        取不到就返回空串（那部分按 0 计）—— **宁可少算已知项，也不能算两遍** ✓
+        """
+        import re as _re
+        try:
+            obj = getattr(self.provider, "SYSTEM_PROMPT", None)
+            if isinstance(obj, str) and obj:
+                return obj
+            mod = __import__(type(self.provider).__module__, fromlist=["_"])
+            obj = getattr(mod, "SYSTEM_PROMPT", None)
+            if isinstance(obj, str) and obj:
+                return obj
+            src = getattr(mod, "__file__", "") or ""
+        except Exception:
+            return ""
+        if not src:
+            return ""
+        try:
+            with open(src, "r", encoding="utf-8", errors="replace") as fh:
+                blob = fh.read()
+        except OSError:
+            return ""
+        m = _re.search(r"SYSTEM_PROMPT\s*=\s*(.*?)(?=\n[A-Z_]|\Z)", blob, _re.S)
+        if not m:
+            return ""
+        parts = _re.findall(r'"""(.*?)"""', m.group(1), _re.S) + \
+            _re.findall(r"'''(.*?)'''", m.group(1), _re.S)
+        return "\n".join(parts)
+
     async def _compact_history(self) -> None:
         """history 超出上下文预算时的自动压缩（即"上下文快满就重新注入"）。
 
@@ -1208,15 +1245,30 @@ class TaskRun:
         if budget < 1024:
             budget = 1024
 
-        def _tokens(msgs: list[dict[str, Any]]) -> int:
-            total = 0
-            for m in msgs:
-                text = str(m.get("content") or "")
-                cjk = sum(1 for ch in text if ord(ch) > 0x2E7F)
-                total += cjk + (len(text) - cjk) // 4 + 8  # 粗估：CJK≈1 token/字，其余≈1 token/4 字符
-            return total
+        # ★ 2026-10-12（长任务撞窗口修复）：
+        #   旧实现用 `汉字数 + 其他//4 + 8` 估算，实测**低估**（代码 0.84 / JSON 0.55 /
+        #   CSV **0.25** —— 见 app/context_budget.py 模块头实测表），且**完全没算固定开销**
+        #   （工具定义实测 3029 token + 系统提示）。结果：本地 27B 那条任务
+        #   `66174 > 65536` 被上游 400 拒掉、任务判 failed ✗
+        #   现在：能精确计数就精确（本地 llama.cpp /tokenize），不能则**绝不低估**，
+        #   并把**固定开销**从预算里扣掉 ✓
+        estimator = getattr(self, "_ctx_estimator", None)
+        if estimator is None:
+            # 本地 llama.cpp 系服务有 `{base_url}/tokenize` ⇒ 精确计数；
+            # 云端 API 没有 ⇒ 自动退回"绝不低估"的保守估算 ✓（见 context_budget 模块头）
+            _base = str(getattr(self.provider, "base_url", "") or "")
+            estimator = context_budget.make_estimator(_base)
+            self._ctx_estimator = estimator
 
-        if _tokens(self.history) <= budget:
+        overhead = estimator.overhead(self.tools, self._system_overhead_text())
+        history_budget = budget - overhead
+        if history_budget < 512:      # 固定开销就把预算吃光时，别把预算算成负数
+            history_budget = 512
+
+        def _tokens(msgs: list[dict[str, Any]]) -> int:
+            return estimator.count_messages(msgs)
+
+        if _tokens(self.history) <= history_budget:
             return
 
         # 1) 截老观察（最近 4 条消息保持原样）
@@ -1224,7 +1276,7 @@ class TaskRun:
         for i, m in enumerate(self.history):
             if m.get("role") == "tool" and i < keep_full_from and len(m.get("content", "")) > 300:
                 m["content"] = m["content"][:300] + "…[历史观察已截断]"
-        if _tokens(self.history) <= budget:
+        if _tokens(self.history) <= history_budget:
             return
 
         # 2) 模型摘要式压缩：中段旧对话 → 一段摘要（配对边界完整；摘要本身标记 _summary 永不再被摘要/丢）
@@ -1259,7 +1311,7 @@ class TaskRun:
                         "_summary": True,
                     }
                     self.history[start : end + 1] = [summary_msg]
-                    if _tokens(self.history) <= budget:
+                    if _tokens(self.history) <= history_budget:
                         return
             except Exception as e:  # 摘要失败 → 回退丢弃策略（不阻塞任务）
                 self.emit("status", {"state": "running", "detail": f"上下文摘要失败，回退截断：{type(e).__name__}"})
@@ -1271,7 +1323,7 @@ class TaskRun:
         #    但 `history[0]` 其实是每次续聊注入的**技能 system 消息**，任务书在它后面，
         #    结果"保护任务书"的代码恰好删掉了任务书。长任务跑到后半程，模型就不记得你要它干什么了。
         protected_tail = 6
-        while len(self.history) > protected_tail and _tokens(self.history) > budget:
+        while len(self.history) > protected_tail and _tokens(self.history) > history_budget:
             first_user = next(
                 (i for i, m in enumerate(self.history) if m.get("role") == "user" and not m.get("_summary")), None
             )
