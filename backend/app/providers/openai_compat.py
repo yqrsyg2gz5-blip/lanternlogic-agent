@@ -131,15 +131,93 @@ class OpenAICompatProvider(ModelProvider):
                 raise RuntimeError(f"上游 {resp.status_code}：{resp.text[:200]}")
         return str(resp.json()["choices"][0]["message"].get("content") or "")
 
+    #: 悬空 tool_calls 的补位回执（与 loop 里同款措辞，便于用户对上号）
+    _RECEIPT_PLACEHOLDER = ("（该工具调用未产生回执：运行在写入观察前结束了——"
+                            "task_done 交付、用户取消或异常中断）")
+
+    def sanitize_notes(self, history: list[dict[str, Any]]) -> list[str]:
+        """体检会改什么（不改数据，只回报）——**修复不许静默** ✓"""
+        return self._sanitize(history)[1]
+
+    def _sanitize(self, history: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+        """★ 请求体检：把畸形消息组合**在发出去之前**修正（2026-10-13 事后加固）。
+
+        ## 为什么要有它
+
+        用户真机 `task_20261012_d0edc269` 运行中失败：
+
+            上游 400：Cannot have 2 or more assistant messages at the end of the list.
+
+        **这是应用自己拼出来的畸形组合，不是模型的问题** ✗ 事后查磁盘历史已经是好的
+        （63 条、`assistant/tool` 交替、悬空 0）⇒ **坏的那一版只存在于运行内存里，现场随进程消失**。
+        所以这里做两道体检，保证**畸形组合压根发不出去**：
+
+          ① **连续 assistant 合并**：OpenAI 兼容协议里 `assistant(tool_calls)` 与紧随的
+             `tool` 回执是一组；末尾出现两组 assistant，严格网关直接拒收。
+             合并时：正文非空的拼起来；`tool_calls` 取**非空的那个**。
+          ② **悬空 tool_calls 补回执**：assistant 声明了工具却没有对应 `tool` 消息 ⇒
+             补一条说明性回执（否则严格网关同样拒收）。
+
+        ★ 修了什么会记进 `notes` 返回（`sanitize_notes` 只回报不改）——
+          **静默改用户数据是更坏的做法** ✓
+        """
+        out: list[dict[str, Any]] = []
+        notes: list[str] = []
+        pending: set[str] = set()          # 已声明、还没见到回执的 tool_call id
+
+        for raw in history:
+            m = {k: v for k, v in raw.items() if not str(k).startswith("_")}
+            role = m.get("role")
+
+            if role == "assistant" and out and out[-1].get("role") == "assistant":
+                prev = out[-1]
+                pc = str(prev.get("content") or "").strip()
+                mc = str(m.get("content") or "").strip()
+                if mc:
+                    prev["content"] = (pc + "\n\n" + mc) if pc else mc
+                if not prev.get("tool_calls") and m.get("tool_calls"):
+                    prev["tool_calls"] = m["tool_calls"]
+                notes.append("合并了连续的 assistant 消息（上游会因此 400）")
+                continue
+
+            if role == "tool":
+                tid = m.get("tool_call_id")
+                if tid:
+                    pending.discard(tid)
+            elif role == "assistant":
+                # 上一条 assistant 若还欠回执，先把回执补上（保持"声明→回执"紧邻）
+                for miss in sorted(pending):
+                    out.append({"role": "tool", "tool_call_id": miss,
+                                "content": self._RECEIPT_PLACEHOLDER})
+                    notes.append(f"为 {miss} 补了缺失的工具回执")
+                pending = set()
+                for c in (m.get("tool_calls") or []):
+                    if c.get("id"):
+                        pending.add(c["id"])
+
+            out.append(m)
+
+        # 收尾：末尾仍悬空的，补回执（这正是"末尾两条 assistant"的成因）
+        for miss in sorted(pending):
+            out.append({"role": "tool", "tool_call_id": miss,
+                        "content": self._RECEIPT_PLACEHOLDER})
+            notes.append(f"为 {miss} 补了缺失的工具回执（原为悬空）")
+
+        if notes:
+            notes.append(f"体检共修复 {len(notes)} 处（结构性问题，内容未丢）")
+        return out, notes
+
     def _assemble(self, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """system(基础) + history；连续 system 合并为一条（部分本地模板不接受多条 system）。"""
+        """system(基础) + history；连续 system 合并为一条（部分本地模板不接受多条 system）。
+
+        ★ 2026-10-13：history 部分先过 `_sanitize` 体检 —— 畸形组合不许发出去 ✗
+        """
         msgs: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for m in history:
+        for m in self._sanitize(history)[0]:
             if m.get("role") == "system" and msgs[-1].get("role") == "system":
                 msgs[-1]["content"] += "\n\n" + str(m.get("content", ""))
             else:
-                # 复审修正：内部标记键（如 _summary）不随请求外发（部分严格网关会 400）
-                msgs.append({k: v for k, v in m.items() if not str(k).startswith("_")})
+                msgs.append(m)
         return msgs
 
     #: 本地推理服务的常见地址特征 —— 用于判断"要不要关思考"
