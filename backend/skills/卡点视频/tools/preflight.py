@@ -176,6 +176,19 @@ def is_ready(rep: dict) -> bool:
     )
 
 
+def _to_posix(path: str) -> str:
+    """Windows 盘符路径 → bash 认的 `/d/...`（已经 posix 的原样返回）。
+
+    ★ 为什么需要：本应用执行命令走 **git bash**（实测 `bash 5.2.37`），
+      而技能原来只给 PowerShell 语法（`$env:PATH = ...`）⇒ bash 报
+      `:PATH: command not found`，**照做反而掉坑** ✗（真机 task_20261013_6a006c3d）
+    """
+    s = str(path or "").strip().replace("\\", "/")
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha():
+        return "/" + s[0].lower() + s[2:]
+    return s
+
+
 def _mark(ok: bool) -> str:
     return "OK  " if ok else "✗   "
 
@@ -218,20 +231,31 @@ def format_report(rep: dict) -> str:
     a("=" * 68)
     if not ok:
         a("")
-        a("在**同一条命令里**先设好环境再跑（PowerShell）：")
+        a("★ **默认给 bash 语法**（本应用执行命令用 git bash —— 实测 `bash 5.2.37`）。")
+        a("  把下面这些行和你真正要跑的命令写在**同一条命令里**")
+        a("  （环境变量只影响当前 shell，下一条命令是新进程、拿不到）：")
         a("")
         if not rep.get("ffmpeg_on_path_ok"):
             if rep["ffmpeg_good"]:
-                a(f"  $env:PATH = '{str(Path(rep['ffmpeg_good']).parent)};' + $env:PATH")
+                posix = _to_posix(str(Path(rep["ffmpeg_good"]).parent))
+                a(f'  export PATH="{posix}:$PATH"')
+                a("  ★ 路径含空格 ⇒ **引号不能省**（本机目录名就是 `MiniMax Design`）")
             else:
                 a("  # 本机找不到带 libx264 的 ffmpeg —— 需要先装一个完整版")
         if not rep.get("chrome_path_set"):
             if rep["browser"]:
-                a(f"  $env:CHROME_PATH = '{rep['browser']}'")
+                posix_b = _to_posix(rep["browser"])
+                a(f'  export CHROME_PATH="{posix_b}"')
             else:
                 a("  # 本机没找到 Edge/Chrome —— 需要先装一个浏览器")
         if not rep["playwright_installed"]:
-            a(f"  cd '{rep['render_dir']}'; npm install")
+            a(f"  cd '{rep['render_dir']}' && npm install")
+        a("")
+        a("  【PowerShell —— 只有你手工在 PS 里跑时才用】")
+        if rep["ffmpeg_good"]:
+            a(f"    $env:PATH = '{str(Path(rep['ffmpeg_good']).parent)};' + $env:PATH")
+        if rep["browser"]:
+            a(f"    $env:CHROME_PATH = '{rep['browser']}'")
         a("")
         a("（本脚本加 `--install` 可自动装渲染依赖；PATH/CHROME_PATH **只打印不代设** ——")
         a("  环境变量只影响当前 shell，代设了下一个进程也拿不到，会造成假象 ✓）")

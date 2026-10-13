@@ -13,7 +13,7 @@ description: 把中文脚本做成卡点（beat-synced）短视频的完整操�
 
 ## 0. 三条前置铁律（违反任何一条，后面全白做）
 
-1. **ffmpeg 只用 `D:\MiniMax Design\current\resources\ffmpeg\ffmpeg.exe`（6.1.1，本机实测 `xfade` + `drawtext` 都通过）**，ffprobe 用同目录 `ffprobe.exe`。
+1. **ffmpeg 只用 `/d/MiniMax Design/current/resources/ffmpeg\ffmpeg.exe`（6.1.1，本机实测 `xfade` + `drawtext` 都通过）**，ffprobe 用同目录 `ffprobe.exe`。
    - ⛔ `D:\Program Files\EVCapture\ffmpeg.exe`：2019 构建，**缺 `xfade`**，且**不支持 `-/filter_complex <文件>` 语法**。做转场或混音会直接失败。
    - ⛔ `D:\JianyingPro\...\ffmpeg.exe`：**缺 `drawtext`**，烧不了字幕。
    - 备选：`D:\Software\GPT-SoVITS\...\runtime\ffmpeg.exe`（4.3.2，xfade / drawtext 都有）。
@@ -24,22 +24,64 @@ description: 把中文脚本做成卡点（beat-synced）短视频的完整操�
 
 ## 1. 开工前 60 秒自检
 
-```powershell
-$FF = 'D:\MiniMax Design\current\resources\ffmpeg\ffmpeg.exe'
-$FP = 'D:\MiniMax Design\current\resources\ffmpeg\ffprobe.exe'
-$PY = 'D:\AI\agent-shell\backend\.venv\Scripts\python.exe'   # 本机唯一装了 scipy 的解释器
-$env:PATH = 'D:\MiniMax Design\current\resources\ffmpeg;' + $env:PATH   # 供 Node 脚本 spawn('ffmpeg')
-$env:CHROME_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+> ⛔ **绝对不要"扫全盘"找东西**（2026-10-13 真机事故：这条让用户风扇转了一小时）
+>
+> ```bash
+> find / -maxdepth 6 -name tools -type d        # ✗✗ 禁止！从根目录扫 C 盘 + D 盘
+> find / -maxdepth 6 -type d -name 卡点视频     # ✗✗ 同上
+> grep -r / ; ls -R / ; dir /s                  # ✗✗ 同理
+> ```
+>
+> **实测代价**：两个这样的 `find` 从 `/` 起扫，**各吃满一个 CPU 核、烧掉 63 分钟和 35 分钟
+> CPU 时间、持续疯狂读磁盘 ⇒ 用户的风扇一直转**；而且它们**永远跑不完**（父进程都退出了
+> 它们还在扫）✗
+>
+> **要用的东西都在已知位置**，直接去那儿拿，别搜：
+>
+> | 要找什么 | 直接在哪 |
+> |---|---|
+> | **技能自带的脚本** | **本技能包的 `tools/` 目录**（清单见 `references/脚本位置与跑法.md` —— 就在你的任务工作区能看到的那个 `tools/`）|
+> | **正确的 ffmpeg** | `/d/MiniMax Design/current/resources/ffmpeg`（PATH 上那个是残版；跑 `python tools/ffmpeg_path.py` 会告诉你用哪个）|
+> | **Python 解释器** | `/d/AI/agent-shell/backend/.venv/Scripts/python.exe`（开发仓，装了 scipy/edge-tts）或当前工作区里能跑通的那个 |
+> | **工作区里的文件** | **只在你自己的工作目录里找**：`ls` / `find . -maxdepth 3`（**`.` 开头，不是 `/`**）|
+>
+> **真要搜，也必须限定在自己的工作区**：`find . -maxdepth 3 -name xxx` —— **永远别用 `/` 或盘符开头** ✓
+
+> ★★ **本应用执行命令用的是 git bash**（实测 `bash 5.2.37`）——
+> **下面一律用 bash 语法**。PowerShell 的 `$env:PATH = ...` 在这里会报
+> `:PATH: command not found`，**照做反而掉坑**（真机 task_20261013_6a006c3d 就这么卡住的）✗
+
+```bash
+# ★ 正确的 ffmpeg 在 /d/MiniMax Design（带 libx264 = 2）
+#   PATH 上那个是 GPT-SoVITS 里的残版（libx264 = 0，编不了 H.264）⇒ **必须前置它**
+#   ★ 路径含空格 ⇒ 引号不能省
+export PATH="/d/MiniMax Design/current/resources/ffmpeg:$PATH"
+
+FF="/d/MiniMax Design/current/resources/ffmpeg/ffmpeg.exe"
+FP="/d/MiniMax Design/current/resources/ffmpeg/ffprobe.exe"
+PY="/d/AI/agent-shell/backend/.venv/Scripts/python.exe"   # 唯一装了 scipy / edge-tts 的解释器
+export CHROME_PATH="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
 ```
 
-| # | 检查 | 命令 | 期望 |
+**一句话版**（懒人用法）：`export PATH="/d/MiniMax Design/current/resources/ffmpeg:$PATH"` ——
+**这行必须和你真正要跑的命令写在同一条命令里**（环境变量只影响当前 shell，
+下一个 `shell_exec` 是新进程、拿不到）✓
+
+**本机是哪个 ffmpeg 可用？跑一下就知道**（不必猜）：
+
+```bash
+"$PY" tools/ffmpeg_path.py      # 打印候选、判定、以及两种 shell 的可复制命令
+```
+
+| # | 检查 | 命令（bash） | 期望 |
 |---|---|---|---|
-| 1 | ffmpeg 版本 | `& $FF -version` | `ffmpeg version 6.1.1` |
-| 2 | xfade 存在 | `& $FF -filters \| Select-String ' xfade '` | 有 `xfade  VV->V` |
-| 3 | ffprobe 存在 | `Test-Path $FP` | `True` |
-| 4 | 中文字体 | `Test-Path 'C:\Windows\Fonts\msyhbd.ttc'` | `True` |
-| 5 | 浏览器 | `Test-Path $env:CHROME_PATH` | `True`（本机**只有 Edge，没有 Chrome**） |
-| 6 | Python + scipy | `& $PY -c "import scipy,numpy;print(scipy.__version__)"` | 打印版本号（系统 Python 3.13 **没装 scipy**） |
+| 1 | ffmpeg 版本 | `"$FF" -version` | `ffmpeg version 6.1.1` |
+| 2 | **libx264 在不在** | `"$FF" -hide_banner -encoders \| grep -c libx264` | **≥1**（0 = 残版，换个 ffmpeg）|
+| 3 | xfade 存在 | `"$FF" -filters \| grep ' xfade '` | 有 `xfade  VV->V` |
+| 4 | ffprobe 存在 | `test -x "$FP" && echo OK` | `OK` |
+| 5 | 中文字体 | `test -f /c/Windows/Fonts/msyhbd.ttc && echo OK` | `OK` |
+| 6 | 浏览器 | `test -x "$CHROME_PATH" && echo OK` | `OK`（本机**只有 Edge，没有 Chrome**）|
+| 7 | Python + scipy | `"$PY" -c "import scipy,numpy;print(scipy.__version__)"` | 打印版本号（系统 Python 3.13 **没装 scipy**）|
 
 **必须显式 `fontfile=`**：四个 ffmpeg 构建在 `drawtext` 时都会打印 `Fontconfig error: Cannot load default config file`。本机实测复现——不带 `fontfile=` 时中文「中文测试」渲染成 **4 个空豆腐块**（433 字节 PNG），带 `fontfile='C\:/Windows/Fonts/msyhbd.ttc'` 才正常（2781 字节）。**烧中文字幕一律显式指定字体。**
 
@@ -72,7 +114,6 @@ $env:CHROME_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
 ```powershell
 & <python> tools\preflight.py
 ```
-
 它会查三件事，并**把该设的环境变量打印成可直接复制的命令**：
 
 | 查什么 | 不修的后果 |
@@ -111,7 +152,6 @@ async for ch in c.stream():
         words.append({"w": ch["text"], "s": round(ch["offset"]/1e7, 3),
                       "e": round((ch["offset"]+ch["duration"])/1e7, 3)})
 ```
-
 - **验收（四条，缺一不可）**：① 每个词 `s < e`；② 词时间**严格单调递增**；③ `words` 数量 == 文本词数（不等就照抄参考项目打印 `N aligned words vs M script tokens` 并修文本或重生成）；④ **切片段按末词 `e` 裁，不按文件长度**——实测最后一个词在 5.35 s 结束而文件长 6.216 s，**有约 0.87 s 静音尾巴**。
 - **兜底（未验证）**：若 TTS 不给词时间戳（如 GPT-SoVITS）已说要用 Whisper / WhisperX 强制对齐——**本机未装任何 ASR，这条路没跑过，先小样验证**。
 
@@ -129,9 +169,8 @@ async for ch in c.stream():
 **别跳过音乐，也别去找素材 —— 直接合成**（不下载任何东西）：
 
 ```powershell
-& $PY tools\make_bgm.py data\bgm-120bpm.wav --seconds 32 --bpm 120 --style beat
+"$PY" tools\make_bgm.py data\bgm-120bpm.wav --seconds 32 --bpm 120 --style beat
 ```
-
 | 参数 | 说明 |
 |---|---|
 | `--seconds` | 时长（与 `DURATION` 对齐；**宁可略长**，后面 `--trim` 会裁） |
@@ -147,20 +186,19 @@ async for ch in c.stream():
 目标 BPM   100  120  130  140  150  155  |  160   165   180
 检测结果    ✓    ✓    ✓    ✓    ✓    ✓   |  ✗一半  ✗一半  ✗一半
 ```
-
 **`beatmap.mjs` 的可靠上限 ≈ 155 BPM**，超过会被检成**一半**（八度误判）。
 ⇒ **想快节奏就把 BPM 定在 155 以内**；实在要更高，脚本会警告你，
 并且**拍点位置仍然正确**（可以用 `--trim` 后按 `beats` 数组切，别用常量 BPM 映射）✓
 
 - **脚本位置**：`beatmap.mjs` **随本技能包带了一份**，在 `tools\render\beatmap.mjs`（它依赖同目录 `audio-analysis.mjs`，**两个文件必须在一起**）。**不要照抄 `node beatmap.mjs` 这种裸命令——本机原来的位置没有这个脚本**，先按 `references/脚本位置与跑法.md` 把 `tools\` 拷到工作目录。
-- **命令**（`$env:PATH` 必须先含 ffmpeg，否则 Node `spawn('ffmpeg')` 直接 ENOENT）：
+- **命令**（`PATH` 里必须先有**带 libx264 的** ffmpeg，否则 Node `spawn('ffmpeg')` 直接 ENOENT。
+  ★ 用 `export PATH="/d/MiniMax Design/current/resources/ffmpeg:$PATH"` —— **和命令写在同一条里**）：
 
-```powershell
-node tools\render\beatmap.mjs track.mp3 data\beats.json --trim track-trimmed.wav
+```bash
+node tools/render/beatmap.mjs track.mp3 data/beats.json --trim track-trimmed.wav
 ```
-
 - **验收**：① 命令 exit 0 且 JSON 写出；② 记录 `maxDriftMs`；③ **`maxDriftMs > 40` 时不得使用常量 BPM 映射，必须直接切 `beats` 数组**（脚本自己会打印 `large: the track is not on a steady grid; cut to result.beats instead`）；④ **本条通过 ≠ 节拍正确**，必须进第 4 步。
-- 备选路线（同样实测会错）：`& $PY tools\scripts\fit-beat-grid.py <音乐> --min-bpm 100 --max-bpm 130`，输出 `(BPM, BEAT0)` 常量网格 + 逐小节 `K`/dB 表。**必须用 `$PY`**（系统 Python 无 scipy）。
+- 备选路线（同样实测会错）：`"$PY" tools\scripts\fit-beat-grid.py <音乐> --min-bpm 100 --max-bpm 130`，输出 `(BPM, BEAT0)` 常量网格 + 逐小节 `K`/dB 表。**必须用 `$PY`**（系统 Python 无 scipy）。
 
 ### 第 4 步 · ★节拍复核（人工硬门，不允许自动通过）
 
@@ -173,14 +211,12 @@ node tools\render\beatmap.mjs track.mp3 data\beats.json --trim track-trimmed.wav
   **按 `data/beats.json` 的每个时间点逐条 `adelay` 摆 click**（脚本已随包带）：
 
 ```powershell
-& $PY tools\make_click_track.py          # 读 data\beats.json，写 music_with_clicks.wav
+"$PY" tools\make_click_track.py          # 读 data\beats.json，写 music_with_clicks.wav
 ```
-
   **判据**：提示音必须**每一响都落在鼓点上**；有半拍错位或整段错位即错。
   （★ 判据能成立的前提是**每拍一响** ✓ —— 实测修好后 **20/20 全中，偏差 +0 ms**）
 - **复核 C · 独立指标**：拿 `gridFit(events, beats)` 的圆集中度 `R` 与 `chanceR = 1/sqrt(n)` 比较（`R` 明显高于 `chanceR` 才说明网格对；见 `references/卡点与音频.md`）。
-- **硬性要求**：**至少两条独立复核通过 + 一条人工听/看记录**，把「检测值 / 复核值 / 依据 / 结论」写进 `data/beat-review.md` 存档。**参考项目自己承认这个局限**：`Beat tracking finds the pulse reliably but can put "one" on the wrong beat: check the first bars by ear in the live preview.`
-
+- **硬性要求**：**至少两条独立复核通过 + 一条人工听/看记录**，把「检测值 / 复核值 / 依据 / 结论」写进 `data/beat-review.md` 存档。**参考项目自己承认这个局限**：`Beat tracking finds the pulse reliably but can put "one" on the wrong beat: check the first bars by ear in the live preview. \
 ### 第 5 步 · 时间线 TIMING（画面的唯一时间源）
 
 - **输入**：`data/vo-lines.json`、`data/beats.json`、`data/script.json`、人工锚点表 `ANCHORS`。
@@ -194,7 +230,6 @@ node tools\render\beatmap.mjs track.mp3 data\beats.json --trim track-trimmed.wav
   "captions": [ { "start": 0.38, "end": 3.7, "words": [["你好",0.5]] } ],
   "sfx": [ { "sfx": "whoosh", "vol": 0.5, "t": 0.5 } ], "env": [0.0, 0.12, 0.9] }
 ```
-
 - **四条排布规则**：① 没锚点的场景 = **上一句结束后 ≥0.12 s 的第一个拍上**（`CUT_AFTER = 0.12`，`nextBeat()`）；② 有锚点则**反向锚定**：`place = anchorLineAt − (l.start − seg.a)/tempo`；③ 片段切割留 **0.08 s 前导 / 0.15 s 尾巴**，且**绝不越过与相邻行的中点**；④ **只要对配音做了变速（如 `TEMPO=1.08`），词级时间戳必须同步除以倍率**。
 - **验收**：① 无 `clips the previous voice` / `overlaps previous line` / `voice runs past its scene end` 告警，**每条告警都要读**；② 每个场景 `start < end` 且首尾相接；③ 所有词时间落在其行的 `[on, off]` 内；④ 打印出的场景起点**全部落在拍号上**（人工确认）。
 
@@ -210,7 +245,6 @@ window.__draw  = t => { /* 画出 t 时刻的整帧；必须是 t 的纯函数 *
 window.__ready = true;                       // 必须在 document.fonts.ready 之后
 window.__renderAudio = async () => base64Wav;// 可选：自带配乐
 ```
-
 - **卡点手法**：遍历拍号，`kick` 拍上脉冲背景层，`kick` 的小节强拍（`n % 4 === 0`）缩放 `#pulse` **约 1%**；`TIMING.drops` 上单独给 flash + shake；**用词锚点编排**（「芯片出现在 *OAuth* 这个词上」），不要写「场景开始后 0.8 秒」。
 - **验收**：① `draw(t)` 是纯函数，**同页渲两遍 SSIM = 1.0**；② 无超过 **2 s** 的完全静止段（设计内的 hold 除外，需登记）；③ 字幕停留够读；④ 文字不出安全区、不压物体、不压最亮处；⑤ 无 `Math.random()` 造成的闪烁。
 
@@ -223,7 +257,6 @@ node tools\render\render.mjs ..\index.html ..\renders\video.mp4 --workers 1 --fr
 node tools\render\render.mjs ..\index.html ..\draft.mp4 --draft                                # 迭代期用草稿
 node tools\render\render.mjs ..\index.html ..\renders\video.mp4 --workers 4 --profile          # 放量 + 性能体检
 ```
-
 - **验收**：`ffprobe` 报 **1920×1080 / 30-1 fps / 时长符合 `DURATION` / h264 + aac 48 kHz 立体声**。
 - **本机注意**：**没有 Chrome**，`CHROME_PATH` 必须指向 Edge；多 worker 共享一块 GPU（参考项目注释：笔记本 iGPU 到 4–6 worker 就不再增长），**从小往大试**。
 - **★ 必须挂后台**：单条命令 60 s 上限，**任何 ≥15 s 的片子一帧帧渲都必然超时**（18 秒片 540 帧那次前台跑就撞了 60 s 超时，改成后台 + 轮询才跑完）。见 `references/时长档位表.md` §4。
@@ -233,17 +266,15 @@ node tools\render\render.mjs ..\index.html ..\renders\video.mp4 --workers 4 --pr
 **先合片再自检**：把**未经渲染器改动的** `mix.m4a` 原样 remux 回去（参考项目实测：渲染器重编码 AAC 会把真峰顶到 0.0 dBFS）。
 
 ```powershell
-& $FF -y -i renders\video.mp4 -i mix.m4a -map 0:v:0 -map 1:a:0 -c copy -movflags +faststart renders\out.mp4
+"$FF" -y -i renders\video.mp4 -i mix.m4a -map 0:v:0 -map 1:a:0 -c copy -movflags +faststart renders\out.mp4
 ```
-
 #### 8.0 · ★★ 先跑一遍机器体检（`tools\qa_video.py`；2026-10-13 实测新增）
 
 **渲染完第一件事**（比下面 8.1 的人工开图更早）：
 
 ```powershell
-& $PY tools\qa_video.py out\final.mp4 --workspace .
+"$PY" tools\qa_video.py out\final.mp4 --workspace .
 ```
-
 **它是你的"眼睛"** —— 你写得出渲染代码，但**看不见自己画的结果**；这个脚本替你量六项：
 
 | 检查项 | 治什么（都是真机踩过的） |
@@ -266,14 +297,14 @@ node tools\render\render.mjs ..\index.html ..\renders\video.mp4 --workers 4 --pr
 | # | 查什么 | 命令 | 合格线 |
 |---|---|---|---|
 | 8.1 | **画面抽帧** | 见 `references/验收清单.md` 的 contact sheet 命令 | **必须实际打开这张图，先把看到的描述出来，再动手改**；每个场景最忙的一刻、字幕带、签名位都要看过 |
-| 8.2 | **关键帧原尺寸** | `node tools\render\still.mjs index.html stills\ 12.5 34 61.2`（脚本随包带，见 `references/脚本位置与跑法.md`）或 `& $FF -ss <t> -i out.mp4 -frames:v 1 -update 1 k.png` | 文字不被裁、不压物体、不压最亮处（contact sheet 缩到 320 px 会掩盖细节） |
-| 8.3 | **响度 / 真峰** | `& $FF -i out.mp4 -af "ebur128=peak=true" -f null NUL` | `I ≈ −14 LUFS`、`Peak ≤ −1 dBFS`（见下方两说并存） |
-| 8.4 | **采样峰值兜底** | `& $FF -i out.mp4 -af volumedetect -f null NUL` | `max_volume` 不逼近 0.0 dB |
-| 8.5 | **黑场** | `& $FF -i out.mp4 -vf "blackdetect=d=0.10:pix_th=0.10" -an -f null NUL` | **设计内黑场之外为 0**；设计黑场（如 12f 蓄爆）必须**登记在案做白名单比对**，而不是要求「零命中」 |
-| 8.6 | **冻帧** | `& $FF -i out.mp4 -vf "freezedetect=n=-60dB:d=0.5" -an -f null NUL` | 设计内 hold 允许静止；**设计外冻帧为 0**（`d=1.0` 会漏掉 35f 级 hold） |
+| 8.2 | **关键帧原尺寸** | `node tools\render\still.mjs index.html stills\ 12.5 34 61.2`（脚本随包带，见 `references/脚本位置与跑法.md`）或 `"$FF" -ss <t> -i out.mp4 -frames:v 1 -update 1 k.png` | 文字不被裁、不压物体、不压最亮处（contact sheet 缩到 320 px 会掩盖细节） |
+| 8.3 | **响度 / 真峰** | `"$FF" -i out.mp4 -af "ebur128=peak=true" -f null /dev/null` | `I ≈ −14 LUFS`、`Peak ≤ −1 dBFS`（见下方两说并存） |
+| 8.4 | **采样峰值兜底** | `"$FF" -i out.mp4 -af volumedetect -f null /dev/null` | `max_volume` 不逼近 0.0 dB |
+| 8.5 | **黑场** | `"$FF" -i out.mp4 -vf "blackdetect=d=0.10:pix_th=0.10" -an -f null /dev/null` | **设计内黑场之外为 0**；设计黑场（如 12f 蓄爆）必须**登记在案做白名单比对**，而不是要求「零命中」 |
+| 8.6 | **冻帧** | `"$FF" -i out.mp4 -vf "freezedetect=n=-60dB:d=0.5" -an -f null /dev/null` | 设计内 hold 允许静止；**设计外冻帧为 0**（`d=1.0` 会漏掉 35f 级 hold） |
 | 8.7 | **配音与画面时长对齐** | 人声实际起点 vs `TIMING` 的 `on`（`ebur128`/RMS 定位） | **补偿后**偏差 **< 50 ms**；每条字幕出入点误差 **≤ 2f**，连续两条字幕不重叠。**⚠️ 必须先用第 2 步的 `acOffset` 补偿，再套这条线——见 8.7 下方说明，裸测一定不达标** |
 | 8.8 | **混音平衡（测量，不许用耳朵）** | 干声 + 台词掩码算 RMS，见 `references/卡点与音频.md` | 音乐在人声下低 **4–6 dB**；`~10 dB` 会被听成「根本没有音乐」 |
-| 8.9 | **确定性** | 同参数渲两遍 → `& $FF -i run1.mp4 -i run2.mp4 -lavfi ssim -f null -` | `SSIM All = 1.000000` |
+| 8.9 | **确定性** | 同参数渲两遍 → `"$FF" -i run1.mp4 -i run2.mp4 -lavfi ssim -f null -` | `SSIM All = 1.000000` |
 | 8.10 | **事实核对** | 逐条回溯第 1 步信源 | 画面上每条信息都能追溯到信源 |
 
 ### 8.7 说明：`< 50 ms` 这条线为什么必须写「补偿后」（**本机实测，别再当矛盾条文用**）
@@ -289,7 +320,6 @@ s02    0.100     0.180       80
 s03    0.100     0.170       70
 三行滞后 70~90 ms，中位 80 ms  ⇒ 技能合格线 <50 ms：裸测三行全部不达标
 ```
-
 同一批素材，制作方自己的 qa 量到的是 **95 / 80 / 75 ms**（起点阈值与窗长不同 ⇒ 读数差 5~10 ms，量级一致）。两条独立测量都落在 **70–95 ms**，**结论一致：这是滞后，不是"它没做好"。**
 
 **执行口径（照这个做，不要自己选）**：
@@ -327,7 +357,6 @@ s03    0.100     0.170       70
 实际发声占窗口的比例         中位 0.97，尾部低到 0.64
 最差几个：外网 109ms（占比 0.74）· 报告 91ms（0.77）· 统计 86ms（0.84）· 干活 84ms（0.83）
 ```
-
 ★ **别只看中位数**：中位 4 ms 会让人误判"没问题"，**问题全在尾部那四成词上**（这一点本轮实测自己踩过：先按中位数放过，改成看分布才发现）。
 
 **怎么量（可执行）**：
@@ -338,7 +367,6 @@ s03    0.100     0.170       70
 # 2) 对每个词的 we，往前 0.8 s 找最后一个有声窗 → 那就是「实际发声尾」
 # 3) 过冲 = we − 实际发声尾；>40 ms 就算不合格
 ```
-
 **修法（写进第 6 步）**：把每个字 span 的动画窗口从 `[ws, we]` 收紧到 `[ws, 实际发声尾]`——
 窗口尾 = min(we, 该词最后一个有声窗的时刻)。**驱动源仍然是词时间戳，只是尾巴按音频实收紧。**
 

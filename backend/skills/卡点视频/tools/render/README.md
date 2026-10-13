@@ -14,13 +14,11 @@
 & <python> tools\preflight.py
 
 # ② 照它打印的命令设好环境（它会把该填的路径填好，直接复制）
-$env:PATH        = '<带 libx264 的 ffmpeg 目录>;' + $env:PATH
-$env:CHROME_PATH = '<Edge 或 Chrome 的 exe>'
-
+export PATH="<带 libx264 的 ffmpeg 目录>:$PATH"
+export CHROME_PATH="<Edge 或 Chrome 的 exe>"
 # ③ 渲染
 node tools\render\render.mjs <你的页面.html> out.mp4 --workers 2
 ```
-
 **`preflight.py` 是开工第一步，别跳过** —— 见 §4"三堵墙"。
 
 ---
@@ -49,7 +47,6 @@ requestAnimationFrame(draw);              // 自己跑动画循环
 // ✓ 这样写 —— 画面只由 t 决定
 function draw(t) { const p = t / DURATION; box.x = 160 + 800 * p; }
 ```
-
 **完整可跑样例**：`tools/render/example.html`（照抄契约即可，内容随你改）。
 
 ---
@@ -87,7 +84,6 @@ function draw(t) { const p = t / DURATION; box.x = 160 + 800 * p; }
 cd tools\render
 npm install     # 只装 playwright-core，不下载浏览器
 ```
-
 不装 ⇒ `Cannot find module 'playwright-core'`，渲染器起不来。
 
 ### ② `CHROME_PATH` 没设
@@ -97,48 +93,45 @@ npm install     # 只装 playwright-core，不下载浏览器
 **本机没装 Google Chrome**（只有 Edge）⇒ 不设这个变量，它会去找 Chrome 然后失败：
 
 ```powershell
-$env:CHROME_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
-```
-
+export CHROME_PATH="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"`` \
 ### ③ ★ **PATH 上的 ffmpeg 可能是残缺版**（最难发现的一条）
 
 **同一个命令名可能有两个版本，PATH 上那个不带 `libx264`**：
 
 ```
 D:\Software\GPT-SoVITS\...\runtime\ffmpeg.EXE   ← 无 libx264 ✗（PATH 上排前面）
-D:\MiniMax Design\current\resources\ffmpeg.exe  ← 有 libx264 ✓
+/d/MiniMax Design/current/resources/ffmpeg.exe  ← 有 libx264 ✓
 ```
-
 带残版渲染会走到编码那步再崩，报：
 
 ```
 Unknown encoder 'libx264'
 ```
-
 **解法**：把**带 libx264 的那个目录**加到 PATH 最前：
 
 ```powershell
-$env:PATH = '<完整 ffmpeg 的目录>;' + $env:PATH
-```
-
+export PATH="<完整 ffmpeg 的目录>:$PATH"`` \
 **怎么确认哪个是完整的**：
 
 ```powershell
-ffmpeg -hide_banner -encoders | Select-String libx264
+ffmpeg -hide_banner -encoders | grep libx264
 # 有输出 = 这个能用；没输出 = 残版
 ```
-
 `preflight.py` 会自动帮你判断这两个版本 ✓
 
 ---
 
 ## 5. 环境变量只影响当前 shell（★ 容易踩）
 
-`$env:CHROME_PATH = …` **只对当前这个 shell 生效**。下一个进程（含 agent 起的每个
+`export CHROME_PATH=…` **只对当前这个 shell 生效**。下一个进程（含 agent 起的每个
 `shell_exec`）**都拿不到** ⇒ **必须在同一条命令里先设再跑**：
 
-```powershell
-$env:PATH = '<ffmpeg目录>;' + $env:PATH; $env:CHROME_PATH = '<浏览器>'; node tools\render\render.mjs page.html out.mp4 --workers 2
+```bash
+export PATH="/d/MiniMax Design/current/resources/ffmpeg:$PATH"; export CHROME_PATH="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"; node tools/render/render.mjs page.html out.mp4 --workers 2
 ```
+
+★ **本应用执行命令走 git bash**（实测 `bash 5.2.37`）⇒ 用 `export`，
+**不要用 PowerShell 的 `$env:X = ...`**（bash 里报 `:X: command not found`）✗
+★ PATH 里含空格的目录**必须加引号**（本机就是 `MiniMax Design`）✓
 
 （`preflight.py` 只**打印**这两行、**不代设** —— 代设了下一个进程也拿不到，反而造成假象。）
