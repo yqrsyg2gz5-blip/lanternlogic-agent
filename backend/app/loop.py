@@ -219,10 +219,16 @@ def _repeat_notes(prev_error: str | None, *, limit: int = 300) -> str:
     ⇒ 把上一次的错误原样回给它，它一眼就能看出该改什么（这次是**改文件名**）。
 
     ★ 只附**错误**，不附成功输出：成功还重复说明是"重跑合理但浪费"，不是困惑。
+    ★★ 还要**识破套娃**：若 `prev_error` 本身就是"护栏提醒"（`（系统提醒）`），
+      说明上游记错了（本班真出过 —— 提醒被当成报错写回，一层套一层，
+      **真正的报错被挤掉**）⇒ 这时宁可**什么都不附**，也别把噪音传给模型 ✗
     """
     if not prev_error:
         return ""
     text = " ".join(str(prev_error).split())
+    # ★ 套娃闸：提醒不是报错。宁可少说，也不要把"上一条提醒"当成"报错"传给模型。
+    if text.startswith("（系统提醒）"):
+        return ""
     if len(text) > limit:
         text = text[:limit] + "…"
     return (
@@ -1103,9 +1109,15 @@ class TaskRun:
                     verdict_kind = "ok"               # 控制信号不计次（纪律门另有安排，见上）
                     prev_error = None
                 else:
-                    # ★ 取"上一次这个动作的报错"（可能在上一轮就记下了）——用于提醒里说清
+                    # ★ 取"上一次这个动作的报错"（在上一轮就记下的）—— 用于提醒里说清
                     #   "你一直在撞同一个错"。见 `_repeat_notes` 的真机事故说明。
-                    prev_error = self._action_errors.pop(sig, None)
+                    #   ★★ 用 `get` 不用 `pop`：**提醒期间这条报错必须留着**。
+                    #     本班踩过（用户当场抓到）：一开始 warn 分支把**提醒自己**写进了
+                    #     `_action_errors`，于是下一条提醒的"上一次报错"变成了上一条提醒，
+                    #     一层套一层变俄罗斯套娃 ✗ **真正的报错被挤掉了**。
+                    #     正确语义：`_action_errors` 只存**工具的报错**；
+                    #     提醒不是报错，不写回、也不清掉（清掉也会同样丢掉真报错）。
+                    prev_error = self._action_errors.get(sig)
                     self._action_counts[sig] = self._action_counts.get(sig, 0) + 1
                     hit = self._action_counts[sig]
                     _warn_at, _trip_at = _repeat_thresholds(self.max_iterations)
@@ -1120,8 +1132,8 @@ class TaskRun:
                     return
                 if verdict_kind == "warn":
                     result = ExecResult(False, _repeat_warn_message(name, hit, prev_error), 0)
-                    # 提醒本身也是"这个动作没成功"⇒ 记下，下一次提醒能继续带上（链条不断）
-                    self._action_errors[sig] = result.output
+                    # ★ 这里**故意不写 `_action_errors`**：提醒不是工具报错。
+                    #   写进去会让下一条提醒引用上一条提醒 ⇒ 套娃（真报错被挤掉）。
                     self.emit("observation", {"call_id": call_id, "ok": False,
                                               "result": result.output})
                     continue

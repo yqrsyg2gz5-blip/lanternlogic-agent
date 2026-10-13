@@ -193,3 +193,60 @@ def test_loop_records_and_clears_the_last_error():
     i_sig = code.find("sig = _action_signature(name, args)")
     i_chain = code.find("if err := self._validate(name, args):")
     assert 0 < i_sig < i_chain, "sig 没提到执行链之前（warning/记录会拿不到它）✗"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★★ 2026-10-13 第二次真机事故：第一版的修法**自己套娃了**（用户当场抓到）
+#
+# 用户贴回来的实际输出：
+#     ★ 而且你上一次的报错是这一条： （系统提醒）你已经做过 8 次完全一样的…
+#     ★ 而且你上一次的报错是这一条： （系统提醒）你已经做过 7 次完全一样的…
+#     …一层套一层，**真正的报错（AttributeError: inspect）反而被挤掉了** ✗
+#
+# 根因：我（画蛇添足）在 warn 分支把**提醒自己**写回了 `_action_errors`，
+#       于是下一条提醒引用的"上一次报错"变成了上一条提醒。
+# 正确语义：`_action_errors` **只存工具的报错**；提醒不是报错，不写回、也不在提醒时清掉
+#           （`pop` 同样会丢掉真报错 —— 必须 `get`）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GUARD_MSG = ("（系统提醒）你已经做过 8 次完全一样的「shell_exec」调用，参数也相同。"
+              "请换一种做法（改参数、换工具、或先查清为什么没成功）；"
+              "如果确实需要重试，请在正文里说明这次与上次有什么不同。")
+
+
+def test_repeat_notes_refuse_to_nest_guard_messages():
+    """★★ 套娃闸：护栏提醒**不是报错** ⇒ 不许被当成"上一次的报错"引出来。
+
+    这条钉的就是用户当场抓到的那个 bug：提醒引用提醒，真报错被挤掉 ✗
+    """
+    notes = _repeat_notes(_GUARD_MSG)
+    assert notes == "", f"把护栏提醒当成报错引出来了（套娃）✗\n{notes}"
+    # 带前导空白的变体也要挡住（消息可能被拼过）
+    assert _repeat_notes("  \n" + _GUARD_MSG) == "", "带空白前缀的提醒没挡住 ✗"
+    # 而真报错照常带出
+    assert "inspect" in _repeat_notes(_INSPECT_ERR), "真报错被误伤 ✗"
+
+
+def test_warn_message_does_not_nest_even_if_fed_its_own_output():
+    """端到端防套娃：拿 warn 的输出再喂回去，也不许长出新的一层。"""
+    first = _repeat_warn_message("shell_exec", 5, _INSPECT_ERR)
+    assert "inspect" in first, "第一次提醒就该带真报错 ✗"
+    # 把第一条提醒当"上一次报错"喂进去（模拟当初的错误写法）
+    second = _repeat_warn_message("shell_exec", 6, first)
+    assert "而且你上一次的报错" not in second, f"第二次提醒又套了一层 ✗\n{second}"
+    # 反复喂也不许增长
+    third = _repeat_warn_message("shell_exec", 7, second)
+    assert len(third) - len(second) < 60, "提醒在逐次变长 ⇒ 还在套娃 ✗"
+
+
+def test_loop_does_not_write_guard_messages_back_into_the_error_map():
+    """★ 接线不许回退：warn 分支**不得**把提醒写回 `_action_errors`。"""
+    import pathlib
+    code = (pathlib.Path(__file__).resolve().parents[1] / "app" / "loop.py").read_text("utf-8")
+    assert "self._action_errors[sig] = result.output" not in code, (
+        "warn 分支又把提醒写回报错表了 ⇒ 会再套娃 ✗（当初就是这么错的）"
+    )
+    # 提醒期间取出真报错必须用 get（pop 会把它丢掉）
+    i_warn = code.find('if verdict_kind == "warn":')
+    i_get = code.find("prev_error = self._action_errors.get(sig)")
+    assert 0 < i_get < i_warn, "取报错没用 get（pop 会把真报错丢掉）✗"
