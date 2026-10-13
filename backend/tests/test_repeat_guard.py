@@ -23,9 +23,12 @@ import pytest
 from app import main as m
 from app.loop import (
     _action_signature,
+    _repeat_notes,
     _repeat_thresholds,
+    _repeat_trip_message,
     _repeat_verdict,
     _repeat_verdict_for,
+    _repeat_warn_message,
 )
 
 
@@ -103,3 +106,90 @@ def test_other_failure_codes_still_work(monkeypatch):
         SimpleNamespace(type="error", payload={"code": "max_iterations", "message": "达到最大迭代次数（25）"}),
     ])
     assert "步数用完" in m._task_failure_reason("t1")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★ 2026-10-13 真机事故：护栏"拦得住但说不清"（用户 task_20261013_0ea1f8de）
+#
+# 模型在工作区建了 `data/inspect.py`，**把 Python 标准库的 inspect 顶掉了**，
+# 于是脚本连续 8 次报同一个错：
+#     AttributeError: module 'inspect' has no attribute 'signature'
+# 护栏判断是对的（该停），但提醒只说「请换一种做法（改参数、换工具、或先查清为什么没成功）」
+# —— **没告诉它"你八次都在撞同一个错"**，模型继续重试到熔断收工 ✗
+#
+# 用户的原话：「同一个动作已经同步 10 次，提前收工……只会把部事扫在同一件事上」
+# ⇒ 修法：把**上一次的报错原样附到提醒里**，让它一眼看出该改根因（这次是改文件名）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INSPECT_ERR = ("Traceback (most recent call last):\n"
+                '  File "<string>", line 7, in <module>\n'
+                "AttributeError: module 'inspect' has no attribute 'signature'")
+
+
+def test_repeat_notes_are_empty_without_an_error():
+    """没有报错就别硬凑提示（成功后的重跑不是"卡住"，不该被说成卡住）。"""
+    assert _repeat_notes(None) == ""
+    assert _repeat_notes("") == ""
+
+
+def test_repeat_notes_quote_the_actual_error():
+    """★ 核心：把上一次的**报错原文**带出来 —— 这是模型唯一缺的信息。"""
+    notes = _repeat_notes(_INSPECT_ERR)
+    assert "inspect" in notes and "signature" in notes, f"没带出报错原文 ✗\n{notes}"
+    assert "AttributeError" in notes, "报错类型丢了 ✗"
+
+
+def test_repeat_notes_tell_it_to_fix_the_root_cause():
+    """光贴报错不够，要明确说"别再跑同一条命令，改根因"。"""
+    notes = _repeat_notes(_INSPECT_ERR)
+    assert "根因" in notes, "没告诉它改根因 ✗"
+    assert "再跑一次同一条命令" in notes, "没劝阻重试 ✗"
+
+
+def test_repeat_notes_truncate_long_errors():
+    """报错可能很长 —— 要截断（别把提醒本身撑成一条巨观察）。"""
+    notes = _repeat_notes("X" * 5000, limit=300)
+    assert len(notes) < 900, f"没截断，长度 {len(notes)} ✗"
+    assert "…" in notes, "截断了但没有省略号（看不出被截）✗"
+
+
+def test_warn_message_carries_the_error():
+    """提醒正文里要能看到报错（模型读的就是这条 observation）。"""
+    txt = _repeat_warn_message("shell_exec", 5, _INSPECT_ERR)
+    assert "shell_exec" in txt
+    assert "inspect" in txt, "提醒里没带报错 ⇒ 模型仍不知道改什么 ✗"
+
+
+def test_trip_message_carries_the_error():
+    """熔断收工的说明里也要带报错（这是它最后一次看到的信息）。"""
+    txt = _repeat_trip_message("shell_exec", 12, _INSPECT_ERR)
+    assert "12" in txt, "次数没写清 ✗"
+    assert "inspect" in txt, "熔断说明里没带报错 ✗"
+    assert "拆小" in txt or "换个办法" in txt, "没给出路 ✗"
+
+
+def test_warn_and_trip_still_work_without_an_error():
+    """没记录到报错时，提醒/熔断照常工作（不许因为新字段缺失就崩）。"""
+    w = _repeat_warn_message("shell_exec", 3, None)
+    t = _repeat_trip_message("shell_exec", 5, None)
+    assert "shell_exec" in w and "shell_exec" in t
+    assert "系统提醒" in w, "提醒的标志字样丢了（别处也认它）✗"
+    assert "inspect" not in w, "没报错却编了一条报错出来 ✗"
+
+
+def test_loop_records_and_clears_the_last_error():
+    """★ 接线验证：loop 里要**记下报错**、并在成功时**清掉**。
+
+    用源码级断言（跟仓里其它"接线不许被拆掉"的护栏同一手法）——
+    真正要防的是"后来人把记录那几行删了、功能静默失效"。
+    """
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1] / "app" / "loop.py"
+    code = src.read_text("utf-8")
+    assert "_action_errors: dict[str, str] = {}" in code, "没有初始化 _action_errors ✗"
+    assert "self._action_errors[sig] = output" in code, "失败时没记下报错 ✗"
+    assert "self._action_errors.pop(sig, None)" in code, "成功时没清掉旧报错 ✗"
+    # ⚠ sig 必须在执行链**外**算好：只在熔断分支里算的话，warning 分支与"记录报错"都拿不到它
+    i_sig = code.find("sig = _action_signature(name, args)")
+    i_chain = code.find("if err := self._validate(name, args):")
+    assert 0 < i_sig < i_chain, "sig 没提到执行链之前（warning/记录会拿不到它）✗"

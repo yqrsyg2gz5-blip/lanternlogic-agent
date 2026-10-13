@@ -202,6 +202,55 @@ _REPEAT_TRIP_AT = 5      # 第 5 次 ⇒ 熔断收工（别把剩下的步数全
 _REPEAT_EXEMPT = {"task_done", "update_plan", "ask_user", "notify"}
 
 
+def _repeat_notes(prev_error: str | None, *, limit: int = 300) -> str:
+    """★ 把"你一直在撞的同一个错"原样附到提醒后面（2026-10-13 真机事故后加）。
+
+    ## 为什么加这个（用户真机 task_20261013_0ea1f8de）
+
+    模型在工作区建了个 `data/inspect.py`，**把 Python 标准库的 `inspect` 顶掉了**，
+    于是脚本连续 8 次报同一个错：
+
+        AttributeError: module 'inspect' has no attribute 'signature'
+
+    护栏**判断是对的**（同一条命令重复失败 8 次，该停），但提醒只说
+    「请换一种做法（改参数、换工具、或先查清为什么没成功）」——
+    **没有告诉它"你八次都在撞同一个错"**，模型于是继续重试到熔断收工 ✗
+
+    ⇒ 把上一次的错误原样回给它，它一眼就能看出该改什么（这次是**改文件名**）。
+
+    ★ 只附**错误**，不附成功输出：成功还重复说明是"重跑合理但浪费"，不是困惑。
+    """
+    if not prev_error:
+        return ""
+    text = " ".join(str(prev_error).split())
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return (
+        "\n★ 而且你上一次的报错是这一条（**连续几次都一样** ⇒ 再重试不会变）：\n"
+        f"    {text}\n"
+        "  请针对这条报错**改根因**（改文件名/改导入/改路径…），而不是再跑一次同一条命令。"
+    )
+
+
+def _repeat_warn_message(name: str, hit: int, prev_error: str | None) -> str:
+    """第 N 次重复时的提醒正文（含"同一个错"提示）。纯函数 ⇒ 可单测。"""
+    return (
+        f"（系统提醒）你已经做过 {hit - 1} 次完全一样的「{name}」调用，参数也相同。"
+        "请换一种做法（改参数、换工具、或先查清为什么没成功）；"
+        "如果确实需要重试，请在正文里说明这次与上次有什么不同。"
+        + _repeat_notes(prev_error)
+    )
+
+
+def _repeat_trip_message(name: str, hit: int, prev_error: str | None) -> str:
+    """熔断收工的说明（含"同一个错"提示）。纯函数 ⇒ 可单测。"""
+    return (
+        f"同一动作（{name}）已经重复 {hit} 次，提前收工——"
+        "继续下去只会把步数烧在同一件事上。请换个办法，或把这件活拆小一点再派。"
+        + _repeat_notes(prev_error)
+    )
+
+
 def _action_signature(name: str, args: dict[str, Any]) -> str:
     """同一动作的指纹：工具名 + 归一化后的参数。
 
@@ -463,6 +512,11 @@ class TaskRun:
         self._empty_turn_streak = 0       # 连续几次"模型返回空响应"（那把失败也值得续 ✓）
         # ★ P0-3：同一动作（工具+参数指纹）的重复计数 —— 治"步骤重复"这个最高频失败（MAST 17.1%）
         self._action_counts: dict[str, int] = {}
+        # ★ 2026-10-13：同动作的**上一次报错** —— 重复提醒里要原样带上它。
+        #   真机事故：模型建了 `data/inspect.py` 顶掉标准库 inspect，连撞 8 次同一个
+        #   AttributeError；旧提醒只说"换个办法"，模型不知道该改文件名 ⇒ 一路重试到熔断。
+        #   带上报错它一眼能看出根因 ✓（见 `_repeat_notes`）
+        self._action_errors: dict[str, str] = {}
         self.max_tokens = max_tokens
         self.max_context_tokens = max_context_tokens
         # ★ 2026-10-11（平台闸修复 ①）：**一条观察进 history 的上限** ✓
@@ -860,6 +914,11 @@ class TaskRun:
                 }],
             })
 
+            # ★ 动作指纹（工具名 + 归一化参数）—— 在链**外**算一次：
+            #   ① 重复熔断要用它计数；② 记录"上一次报错"也要用它（见 _repeat_notes）
+            #   （以前只在熔断那个 else 分支里算，warning 分支与后面的记录就没得用 ✗）
+            sig = _action_signature(name, args)
+
             if err := self._validate(name, args):
                 result = ExecResult(False, f"参数校验失败：{err}", 0)
             elif name == "task_done":
@@ -1040,17 +1099,19 @@ class TaskRun:
             #   ★ 必须放在**执行分支内部**：放外面会把 if/elif/else 链拆坏（本班踩过 ——
             #     那样 update_plan/load_skill 也会掉进执行分支，交付纪律门的老测试当场变红）。
             else:
-                sig = _action_signature(name, args)
                 if name in _REPEAT_EXEMPT:
                     verdict_kind = "ok"               # 控制信号不计次（纪律门另有安排，见上）
+                    prev_error = None
                 else:
+                    # ★ 取"上一次这个动作的报错"（可能在上一轮就记下了）——用于提醒里说清
+                    #   "你一直在撞同一个错"。见 `_repeat_notes` 的真机事故说明。
+                    prev_error = self._action_errors.pop(sig, None)
                     self._action_counts[sig] = self._action_counts.get(sig, 0) + 1
                     hit = self._action_counts[sig]
                     _warn_at, _trip_at = _repeat_thresholds(self.max_iterations)
                     verdict_kind = _repeat_verdict_for(hit, _warn_at, _trip_at)
                 if verdict_kind == "trip":
-                    detail = (f"同一动作（{name}）已经重复 {hit} 次，提前收工——"
-                              "继续下去只会把步数烧在同一件事上。请换个办法，或把这件活拆小一点再派。")
+                    detail = _repeat_trip_message(name, hit, prev_error)
                     self.emit("error", {"message": detail, "code": "step_repetition"})
                     # 已产出的东西照常交付：置 partial（不是 failed）——群里能看到交付、验收照跑，
                     # 这才是诚实的"做了一部分"
@@ -1058,11 +1119,9 @@ class TaskRun:
                     self.emit("status", {"state": "partial", "detail": "检测到重复动作，提前收工"})
                     return
                 if verdict_kind == "warn":
-                    result = ExecResult(False, (
-                        f"（系统提醒）你已经做过 {hit - 1} 次完全一样的「{name}」调用，参数也相同。"
-                        "请换一种做法（改参数、换工具、或先查清为什么没成功）；"
-                        "如果确实需要重试，请在正文里说明这次与上次有什么不同。"
-                    ), 0)
+                    result = ExecResult(False, _repeat_warn_message(name, hit, prev_error), 0)
+                    # 提醒本身也是"这个动作没成功"⇒ 记下，下一次提醒能继续带上（链条不断）
+                    self._action_errors[sig] = result.output
                     self.emit("observation", {"call_id": call_id, "ok": False,
                                               "result": result.output})
                     continue
@@ -1104,6 +1163,12 @@ class TaskRun:
                         self.web_evidence.add(norm)
 
             output = self._redact(result.output)
+            # ★ 2026-10-13：记下"这个动作上一次的报错"，供重复提醒原样带上。
+            #   成功则清掉（成功还重复 = 重跑合理但浪费，不是"卡在同一个错"）。
+            if not result.ok:
+                self._action_errors[sig] = output
+            else:
+                self._action_errors.pop(sig, None)
             self.emit("observation", {
                 "call_id": call_id,
                 "ok": result.ok,
