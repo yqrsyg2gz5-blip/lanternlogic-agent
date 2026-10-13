@@ -19,6 +19,8 @@ PATH 上的 `python` 是残件（只有 exe+DLL、没有 `Lib\`），`python --v
 """
 from __future__ import annotations
 
+import pathlib
+
 from app import envfacts
 
 
@@ -31,8 +33,18 @@ def test_python_probe_skips_broken_interpreters(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_SHELL_PYTHON", raising=False)
     cmd, why = envfacts.python_cmd()
     # 后端自己的解释器一定可用 ⇒ 会兜到它；绝不该返回那个假解释器
+    # ★ 2026-10-14 修（第三方测评抓出的可移植性问题）：
+    #   原判据写死 `"venv" in cmd.lower()` —— 那是**开发机形态**的路径
+    #   （`backend\.venv\Scripts\python.exe`）。
+    #   发布包形态的解释器在 **`runtime\python.exe`**（不含 "venv"）⇒ 这条在发布包上**必红**，
+    #   而功能本身是正常的（它确实跳过了假解释器、兜到了真解释器）✗
+    #   ⇒ 改成**按语义断言**：返回的不能是那个假解释器，且必须真的是个能跑的解释器 ✓
     if cmd:
-        assert "python.exe" not in cmd or "venv" in cmd.lower(), (cmd, why)
+        assert str(fake) not in cmd, (
+            f"兜到了一个「跑啥都失败」的解释器 ⇒ 残件没被跳过 ✗\n  cmd={cmd}\n  why={why}"
+        )
+        assert "python" in cmd.lower(), (cmd, why)
+        assert pathlib.Path(cmd.strip('"')).exists(), f"返回的解释器不存在: {cmd} ✗"
     else:
         assert "没找到" in why, why
     envfacts.python_cmd.cache_clear()

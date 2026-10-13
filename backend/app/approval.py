@@ -3105,14 +3105,32 @@ class ApprovalManager:
 
     @staticmethod
     def _protected_dirs() -> list[str]:
-        """应用关键目录（绝对路径小写，正斜杠）。工作区不在其中（它本来就允许写）。"""
+        """应用关键目录（绝对路径小写，正斜杠）。工作区不在其中（它本来就允许写）。
+
+        ★★ 2026-10-14：**必须同时覆盖开发机形态与发布包形态**（第三方测评抓出的 P1）
+
+          开发机：解释器与依赖在 `<repo>/backend/.venv/`
+          发布包：解释器与依赖在 **`<repo>/runtime/`**（随包自带的 Python 运行时）
+
+          原来只保护了 `.venv` ⇒ 发布包形态下 **Agent 一条 `rm -f runtime/python.exe`
+          就能删掉整套 Python**（即使开了「本任务全部允许」也照样放行）✗
+          —— 那是 2026-10-06「venv 里 python.exe 被删」事故的**发布包翻版**，
+          而且删掉的东西更多（解释器 + 全部依赖），用户再也起不来应用 ✓
+
+          ⚠️ 为什么原来没抓到：开发机上 `sys.executable` 指向 `.venv/...`（在名单里），
+            所以本文件里那条用 `sys.executable` 的测试**在开发机永远绿** ——
+            只有拿发布包的运行时去跑才红（`test_app_dir_protection.py` 新加的两条覆盖它）✓
+        """
         here = Path(__file__).resolve()               # <app>/approval.py
         app_dir = here.parent                          # <app>
         backend = app_dir.parent                       # <backend>
         repo = backend.parent                          # <repo>
-        cands = [app_dir, backend / ".venv", backend / "data" / "tasks",
-                 repo / "scripts", repo / "frontend", backend / "config.json",
-                 repo / "config.json"]
+        cands = [app_dir,
+                 backend / ".venv",                    # 开发机形态的运行时
+                 repo / "runtime",                     # ★ 发布包形态的运行时（随包 Python）
+                 backend / "data" / "tasks",
+                 repo / "scripts", repo / "frontend",
+                 backend / "config.json", repo / "config.json"]
         return [str(c).replace("\\", "/").lower() for c in cands]
 
     # 破坏性动作（删/移/改名/写进去…）。只有它们**配上**受保护路径才要人工确认；

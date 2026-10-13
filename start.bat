@@ -44,6 +44,24 @@ set "PY=%ROOT%runtime\python.exe"
 if not exist "%PY%" set "PY=%ROOT%backend\.venv\Scripts\python.exe"
 if not exist "%PY%" set "PY=python"
 
+REM ---- config.json: make a fresh extract truly "unzip and run" -------------
+REM 2026-10-14 (third-party review + my own v0.1.1 test): preflight FAILS on a
+REM brand-new extract because config.json does not exist yet -- the package
+REM only ships contracts\config.example.json. start.bat then hit
+REM "if errorlevel 1 -> exit /b 1", so a user who only double-clicks start.bat
+REM (never install.bat) could NOT start the app at all, while README promises
+REM the -full.zip is "unzip and run". install.bat already did this copy
+REM (step [4/5]); start.bat did not -> same gap as the P0 skill-list bug.
+REM Guard: backend\tests\test_start_bat_is_truly_extract_and_run.py
+REM NEVER overwrite an existing config.json: that is the user's own settings
+REM (provider / model / port). Copy only when it is missing.
+if not exist "%ROOT%config.json" (
+  if exist "%ROOT%contracts\config.example.json" (
+    copy "%ROOT%contracts\config.example.json" "%ROOT%config.json" >nul
+    echo  [OK] config.json created from the template ^(mock brain - set your provider in Settings^)
+  )
+)
+
 REM ---- preflight (Chinese report; exit code 1 = blocking issue) --------
 "%PY%" "%ROOT%scripts\preflight.py"
 if errorlevel 1 (

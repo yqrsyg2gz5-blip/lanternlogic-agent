@@ -120,3 +120,63 @@ def test_commands_inside_the_workspace_are_not_blocked():
 def test_normal_commands_are_unaffected():
     for cmd in ("ls -la", "python todo.py add 买牛奶", "grep -n x todo.py"):
         assert _check(cmd) is None, cmd
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★ 2026-10-14：**发布包形态**的运行时也要在硬墙之内（第三方测评抓出的 P1）
+#
+# 现场：第三方只读测评对 `D:\测试-Flash对比\LanternLogic-Agent`（下载版）实测
+#
+#     rm -f "<repo>/runtime/python.exe"     （**即使开了「本任务全部允许」**）
+#     → 返回 allow_all（放行）✗
+#
+# 根因：`_protected_dirs()` 只保护了 `backend/.venv`（开发机形态），
+#       **没有 `<repo>/runtime`**（发布包形态）。
+#       而发布包的整套 Python 运行时（解释器 + 全部依赖）就在那儿 ✗
+#
+# 这正是 2026-10-06「venv 里 python.exe 被删」事故的**发布包翻版**，
+# 而且删掉的是更完整的东西 —— 用户再也起不来应用 ✓
+#
+# ⚠️ 为什么原来没抓到：开发机上 `sys.executable` 指向 `backend/.venv/...`（在名单里），
+#    所以本文件里那条用 `sys.executable` 的测试**在开发机永远绿**；
+#    只有拿**发布包的运行时**去跑才红 ⇒ 这就是它当时红的原因，红得对 ✓
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_protected_dirs_include_the_portable_runtime():
+    """★ 发布包的 `runtime/` 必须在硬墙之内（它是整套 Python 运行时）。
+
+    判据用**仓库相对路径**算，这样换机器、换目录都成立 ✓
+    """
+    repo = pathlib.Path(__file__).resolve().parents[2]        # <repo>
+    want = str(repo / "runtime").replace("\\", "/").lower()
+    dirs = ApprovalManager._protected_dirs()
+    assert want in dirs, (
+        f"发布包的运行时目录不在硬墙保护内 ⇒ Agent 一条 rm 就能删掉整套 Python ✗\n"
+        f"  期望包含: {want}\n  实际名单: {dirs}"
+    )
+
+
+def test_portable_runtime_cannot_be_deleted_even_with_allow_all():
+    """★ 端到端：删发布包运行时的解释器 —— **开了「全部允许」也必须拦下**。
+
+    这条模拟的就是测评里那次实测（`rm -f <repo>/runtime/python.exe` → allow_all ✗）。
+    """
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    rt_py = repo / "runtime" / "python.exe"
+    rt_lib = repo / "runtime" / "Lib"
+    for bad in (f'rm -f "{rt_py}"', f'del "{rt_py}"', f'rm -rf "{rt_lib}"'):
+        v = _check(bad, allow_all=True)
+        assert v is not None and v.action == "ask", (bad, v)
+        assert "应用自身的目录" in (v.reason or ""), (bad, v.reason)
+
+
+def test_portable_runtime_is_still_usable_as_an_interpreter():
+    """★ 别误伤：**调用**发布包运行时的解释器跑脚本，**不该**触发硬墙。
+
+    （"光是调用解释器不算"是 2026-10-06 立的规矩 —— 那是环境交底教的用法 ✓）
+    """
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    rt_py = repo / "runtime" / "python.exe"
+    for ok in (f'"{rt_py}" todo.py add 买牛奶', f'"{rt_py}" -m unittest test_todo -v'):
+        v = _check(ok, allow_all=True)
+        assert v is None or "应用自身的目录" not in (v.reason or ""), (ok, v)
