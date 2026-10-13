@@ -65,6 +65,30 @@ $env:CHROME_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
 
 ## 3. 逐步操作
 
+### 第 0 步 · ★★ 环境体检（**必做，别跳过**；2026-12-13 实测新增）
+
+**开工第一件事**，在技能目录下跑：
+
+```powershell
+& <python> tools\preflight.py
+```
+
+它会查三件事，并**把该设的环境变量打印成可直接复制的命令**：
+
+| 查什么 | 不修的后果 |
+|---|---|
+| 渲染依赖（`playwright-core`） | 渲染器起不来（`Cannot find module`） |
+| 浏览器 + `CHROME_PATH` | `render.mjs` 去找 Google Chrome，本机没装 ⇒ 直接失败 |
+| **ffmpeg 必须带 `libx264`** | 渲染跑到**编码那步**才崩：`Unknown encoder 'libx264'`（最阴——PATH 上那个可能是残版）|
+
+**为什么不能省**：真机实测**两轮 720 步、1336 万 token、0 产物** —— 步数全耗在这三堵墙上试错。
+`preflight.py` 加 `--install` 可自动装渲染依赖；`--json` 给程序读。
+
+★ **它只管环境，不碰任何创作**：页面长什么样、什么风格、几个场景、片长多少，
+**全部由你决定**（页面契约见 `tools/render/example.html`，照抄即可）。
+
+**验收**：退出码 0（打印「✅ 环境就绪」）。**若是 1，先按它给的三条命令修，别往下走。**
+
 ### 第 1 步 · 立项
 
 - **输入**：用户需求。**输出**：`plan.md`。

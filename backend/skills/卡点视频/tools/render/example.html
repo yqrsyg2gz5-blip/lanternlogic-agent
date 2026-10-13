@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>render.mjs 页面契约 · 可跑样例</title>
+<!--
+  ============================================================================
+  这是「页面契约」的**可跑样例** —— 不是视频模板，不绑定任何题材。
+
+  为什么要它：render.mjs / still.mjs 要求页面暴露三个接口，缺一个就
+  `page.waitForFunction: Timeout 120000ms exceeded` 直接失败（真机实测踩到）。
+
+    window.__meta = { W, H, FPS, DURATION }   画布尺寸 / 帧率 / 总时长（秒）
+    window.__draw = (t) => { ... }            按"第 t 秒"把画面画出来（纯函数，别依赖真实时钟）
+    window.__ready = true                     前面都就绪后，最后一步置位
+    window.__renderAudio = () => base64WAV    可选：让渲染器把音频混进去
+
+  画什么、什么风格、几个场景、配什么字 —— **全由你（AI）决定**。
+  本文件只示范"怎么把画面画到 canvas 上"，删掉 draw() 里的内容随便改 ✓
+
+  跑法（在技能目录下，PowerShell）：
+    $env:PATH       = '<带 libx264 的 ffmpeg 目录>;' + $env:PATH
+    $env:CHROME_PATH = '<Edge 或 Chrome 的 exe 路径>'
+    node tools/render/render.mjs tools/render/example.html out.mp4 --workers 2
+
+  （`python tools/preflight.py` 会告诉你上面两行该填什么）
+  ============================================================================
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #0b1020; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage" width="1080" height="1920"></canvas>
+<script>
+// ── 契约第 1 件：尺寸与时长（渲染器读它来算帧数和视口）────────────────────
+const W = 1080, H = 1920, FPS = 30, DURATION = 3.0;
+
+const canvas = document.getElementById('stage');
+const g = canvas.getContext('2d');
+
+// ── 契约第 2 件：__draw(t) 把"第 t 秒"的画面画出来 ────────────────────────
+//    ★ 必须是**时间的纯函数**：同一个 t 画出来的东西必须一样
+//      （别用 Date.now() / requestAnimationFrame 做动画 —— 渲染器是逐帧抽的，
+//        那样每帧都会不一样，出来的片子会闪）
+function draw(t) {
+  const p = Math.max(0, Math.min(1, t / DURATION));   // 全片进度 0..1
+
+  // 背景
+  g.fillStyle = '#0b1020';
+  g.fillRect(0, 0, W, H);
+
+  // 顶部进度条
+  g.fillStyle = '#4fe9d6';
+  g.fillRect(0, 0, W * p, 14);
+
+  // 一个随时间移动 + 旋转的方块（示范"动起来"）
+  g.save();
+  g.translate(160 + (W - 480) * p, H * 0.42);
+  g.rotate(p * Math.PI * 2);
+  g.fillStyle = `hsl(${180 + p * 120}, 80%, 60%)`;
+  g.fillRect(-110, -110, 220, 220);
+  g.restore();
+
+  // 文字（示范画字；真实片子里这里是你的字幕/标题）
+  g.textAlign = 'center';
+  g.fillStyle = 'rgba(232,240,250,0.92)';
+  g.font = '700 88px "Segoe UI", "Microsoft YaHei", sans-serif';
+  g.fillText(t.toFixed(2) + 's', W / 2, H * 0.68);
+
+  g.fillStyle = 'rgba(232,240,250,0.55)';
+  g.font = '600 44px "Segoe UI", "Microsoft YaHei", sans-serif';
+  g.fillText('页面契约样例 · 随你改', W / 2, H * 0.74);
+}
+
+// ── 契约第 3 件：暴露接口 + 最后置 ready ──────────────────────────────────
+//    可选第 4 件：window.__renderAudio = () => '<base64 的 WAV>'
+//    （不提供也行；渲染出来就是无声视频，可以用 render.mjs --voice/--music 另外混）
+window.__meta = { W, H, FPS, DURATION };
+window.__draw = draw;
+draw(0);            // 先画一帧，避免截到空白
+window.__ready = true;
+</script>
+</body>
+</html>
