@@ -250,3 +250,68 @@ def test_loop_does_not_write_guard_messages_back_into_the_error_map():
     i_warn = code.find('if verdict_kind == "warn":')
     i_get = code.find("prev_error = self._action_errors.get(sig)")
     assert 0 < i_get < i_warn, "取报错没用 get（pop 会把真报错丢掉）✗"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★★ 2026-10-13 第三次真机事故：修好了却"一个字都没显示" —— 因为 ok 骗人
+#
+# 用户又问了一次「我发继续，怎么又显示同一动作重复 10 次」。查下去发现：
+# 模型跑的命令是
+#     python data/generate_voice.py … > data/gen_01.log 2>&1; echo "exit=$?"; tail -2 data/gen_01.log
+# **末尾 `tail` 成功了** ⇒ 整条命令退出码 0 ⇒ `ok=True`，
+# 可输出里明明写着 `exit=1` + `AttributeError: module 'inspect' …`
+# ⇒ 第一版"失败才记报错"的逻辑**永远记不下来** ⇒ 新提醒一个字都显示不出来 ✗
+#
+# 修法：判据从"只看 ok"改成 `_looks_like_failure(ok, output)`
+#       —— 输出里带失败痕迹，同样算报错 ✓
+# ─────────────────────────────────────────────────────────────────────────────
+
+_REAL_OUTPUT = ("exit=1\n"
+                "               ^^^^^^^^^^^^^^^^^\n"
+                "AttributeError: module 'inspect' has no attribute 'signature' "
+                "(consider renaming 'D:\\测试-Flash对比\\…\\data\\inspect.py')")
+
+
+def test_ok_true_but_output_shows_failure_still_counts_as_an_error():
+    """★★ 核心：`ok=True` 但输出里有 `exit=1`/报错 ⇒ **必须算失败**。
+
+    这条钉的就是"修好了却一个字没显示"那个事故。
+    """
+    from app.loop import _looks_like_failure
+    assert _looks_like_failure(True, _REAL_OUTPUT) is True, (
+        "ok=True 就不认报错了 ⇒ 真报错永远记不下、提醒带不出来 ✗（真机事故）"
+    )
+    # 各种"命令自己成功、失败藏在输出里"的写法都要认出来
+    for out in ("exit=1", "exit=127", "Traceback (most recent call last):",
+                "Error: something broke", "no such file or directory",
+                "'foo' is not recognized as an internal or external command",
+                "（退出码 1）", "（exit 1）"):
+        assert _looks_like_failure(True, out) is True, f"漏认了失败痕迹：{out!r} ✗"
+
+
+def test_ok_false_always_counts_as_an_error():
+    from app.loop import _looks_like_failure
+    assert _looks_like_failure(False, "随便什么输出") is True
+    assert _looks_like_failure(False, "") is True
+
+
+def test_normal_success_is_not_mistaken_for_a_failure():
+    """正常成功的输出**不许**被当成报错（否则报错表里全是噪音）。"""
+    from app.loop import _looks_like_failure
+    for out in ("Saved OK\nFiles: ['a.mp3', 'b.json']",
+                "done: 11 words; last_end= 5.5 duration= 6.0",
+                "已生成语音 vo_01.mp3", "0 0.500 - 4.125 一秒 line=1",
+                "plan: 9 steps", ""):
+        assert _looks_like_failure(True, out) is False, f"把正常输出误判成报错：{out!r} ✗"
+
+
+def test_loop_uses_looks_like_failure_for_the_error_map():
+    """★ 接线不许回退：记报错必须走 `_looks_like_failure`（不能只看 result.ok）。"""
+    import pathlib
+    code = (pathlib.Path(__file__).resolve().parents[1] / "app" / "loop.py").read_text("utf-8")
+    assert "if _looks_like_failure(result.ok, output):" in code, (
+        "记报错没走 _looks_like_failure ⇒ ok=True 时真报错会被清掉 ✗"
+    )
+    assert "if not result.ok:\n                self._action_errors[sig]" not in code, (
+        "又退回『只看 ok』的老写法了 ✗"
+    )

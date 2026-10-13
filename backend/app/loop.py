@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -202,6 +203,44 @@ _REPEAT_TRIP_AT = 5      # 第 5 次 ⇒ 熔断收工（别把剩下的步数全
 _REPEAT_EXEMPT = {"task_done", "update_plan", "ask_user", "notify"}
 
 
+#: 输出里的失败痕迹（见 `_looks_like_failure` 的真机事故说明）。
+#: 小写比对 —— 统一大小写变体（`Error:` / `error:` / `ERROR:` 一份就够）。
+_FAILURE_MARKS = (
+    "（退出码",       # 应用自己给 shell 结果加的标注（中文）
+    "（exit",        # 同上（英文变体）
+    "exit=1", "exit=2", "exit=126", "exit=127",    # `echo "exit=$?"` 的常见值
+    "traceback (most recent call last)",
+    "error:",
+    "no such file or directory",
+    "command not found",
+    "is not recognized as an internal or external command",
+)
+
+
+def _looks_like_failure(ok: bool, output: str) -> bool:
+    """这次工具调用**算不算失败**（用于"记下报错"）。
+
+    `ok=False` 当然是失败。但真机踩过一个坑（用户 task_20261013_0ea1f8de）：
+    模型把命令写成
+
+        python gen.py > out.log 2>&1; echo "exit=$?"; tail -2 out.log
+
+    **末尾 `tail` 成功了** ⇒ 整条命令退出码 0 ⇒ `ok=True`，
+    可它就是在反复失败（输出里 `exit=1` + `AttributeError: …`）。
+    只看 `ok` 的话，这条报错**永远记不下来** ⇒ 重复提醒带不出真报错 ✗
+
+    ⇒ 补一条判据：**输出里带失败痕迹也算失败**。
+    口径与仓里既有的 `_ran_shell` 判据一致（那里也认 `（退出码`/`（exit`）。
+
+    ★ 宁可多认（把"命令自己成功但报告了失败"记成报错），
+      也不要漏认 —— 漏认的代价是模型继续撞墙到熔断。
+    """
+    if not ok:
+        return True
+    text = (output or "").lower()
+    return any(mark in text for mark in _FAILURE_MARKS)
+
+
 def _repeat_notes(prev_error: str | None, *, limit: int = 300) -> str:
     """★ 把"你一直在撞的同一个错"原样附到提醒后面（2026-10-13 真机事故后加）。
 
@@ -306,13 +345,115 @@ def _repeat_verdict_for(count: int, warn_at: int, trip_at: int) -> str:
     return "ok"
 
 
-def _repeat_thresholds(max_iterations: int) -> tuple[int, int]:
-    """按步数预算算 (提醒阈值, 熔断阈值)。"""
+def _base_thresholds(max_iterations: int) -> tuple[int, int]:
+    """基线阈值（按步数预算缩放）—— **云端 API 的行为以它为准，不许变**。
+
+    ★ 2026-10-13：从 `_repeat_thresholds` 里抽出来，单独成函数，
+      好让"本地收紧"叠在它之上、而**云端这条路径一个字都不动** ✓
+      （用户硬约束：「其他的 API 千万别改错了……别让他们降低功能」）
+    """
     budget = max(4, int(max_iterations or 25))
     warn = min(budget, max(3, budget // 8))
     trip = min(budget, max(5, budget // 5))
     if trip <= warn:
         trip = min(budget, warn + 1)
+    return (warn, trip)
+
+
+def _repeat_thresholds(max_iterations: int) -> tuple[int, int]:
+    """按步数预算算 (提醒阈值, 熔断阈值)。—— **保持原行为**（云端走这条路）。"""
+    return _base_thresholds(max_iterations)
+
+
+def _provider_is_local(provider: Any) -> bool:
+    """这个 provider 是不是**本机推理服务**（llama.cpp / ollama / LM Studio 这类小模型）。
+
+    ★ 只用来给本地模型**单独收紧**重复阈值 —— 云端 API 行为一个字不动 ✓
+      （用户硬约束：「针对 27B 这种本地部署模型必须优化」+「别的 API 别降级」）
+
+    ★ 取不到就当 False（**宁可不动**）：判断失败不该把任何模型的阈值改掉 ✗
+    """
+    if provider is None:
+        return False
+    # provider 上可能有现成的属性（布尔）或方法（`_is_local_endpoint()`）
+    attr = getattr(provider, "is_local_endpoint", None)
+    if isinstance(attr, bool):
+        return attr
+    fn = getattr(provider, "_is_local_endpoint", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            return False
+    # 退路：自己看 base_url（与 provider 的口径一致）
+    return _url_is_local(str(getattr(provider, "base_url", "") or ""))
+
+
+#: 本机推理服务的常见地址特征（与 `providers/openai_compat.py::_LOCAL_HINTS` 同口径）
+_LOCAL_URL_HINTS = ("127.0.0.1", "localhost", "0.0.0.0", "[::1]", "::1")
+
+
+def _url_is_local(url: str) -> bool:
+    """base_url 是不是指向本机（退路判据，见 `_provider_is_local`）。"""
+    u = (url or "").lower()
+    return any(h in u for h in _LOCAL_URL_HINTS)
+
+
+def _output_fingerprint(output: Any) -> str:
+    """工具输出的指纹 —— 用于判断"这次结果和上次是不是一字不差"。
+
+    归一化：合并所有空白（命令行输出常带多余空行/缩进）、去首尾。
+    ⇒ 只有空白差异算"没变"（那是真浪费）；**内容有任何变化都算"有进展"** ✓
+    """
+    text = " ".join(str(output or "").split())
+    try:
+        return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:16]
+    except Exception:
+        return str(len(text))
+
+
+#: 本地端点的重复阈值上限（真机证据：预算 300 步时基线 37/60 ⇒ 它绕了 37 次护栏才开口 ✗）
+_LOCAL_WARN_CAP = 5
+_LOCAL_TRIP_CAP = 8
+
+
+def _thresholds_with_escalation(max_iterations: int, *,
+                                is_local: bool = False,
+                                same_output: bool = False) -> tuple[int, int]:
+    """在基线之上做两档收紧 —— **两条都只在"确实浪费"时生效**。
+
+    ## 为什么不能直接把阈值调小
+
+    朴素做法是"5/8 改成 3/5"，但那会**误伤云端 API**：云端模型重复跑同一条命令
+    有时是合理的（重试网络、等文件落盘、轮询状态）。用户明确要求**别的 API 不许降级** ✗
+
+    ## 两档收紧（判据都指向"没有进展"）
+
+      ① **本地端点**（base_url 是本机 ⇒ llama.cpp / ollama / LM Studio 这类小模型）：
+         预算再大也收紧到 `_LOCAL_WARN_CAP / _LOCAL_TRIP_CAP`。
+         真机证据：bonsai 27B 在一条 `ffmpeg -encoders` 上绕了 **37 次**，
+         而当时基线要 37 次才提醒、60 次才熔断 ⇒ 护栏等于没起作用 ✗
+      ② **输出一字不差**（这次结果和上次完全相同 ⇒ 纯浪费）：**所有端点**再提前一档。
+         云端也适用 —— 同一条命令、同样的输出、反复跑，没有任何"合理重试"的解释 ✓
+         但仍**保留一半基线空间**，避免误伤（见测试 `test_cloud_escalation_*`）。
+
+    ★ 云端 + 输出在变 ⇒ 返回的就是 `_base_thresholds`，**与修复前完全一致** ✓
+    """
+    warn, trip = _base_thresholds(max_iterations)
+
+    if same_output:
+        # 提前一档，但不低于基线的一半（云端也不误伤）
+        floor_w = max(2, warn // 2)
+        floor_t = max(3, trip // 2)
+        warn = max(floor_w, warn - 2)
+        trip = max(floor_t, trip - 3)
+
+    if is_local:
+        warn = min(warn, _LOCAL_WARN_CAP)
+        trip = min(trip, _LOCAL_TRIP_CAP)
+
+    if trip <= warn:
+        trip = warn + 1
     return (warn, trip)
 
 
@@ -523,6 +664,14 @@ class TaskRun:
         #   AttributeError；旧提醒只说"换个办法"，模型不知道该改文件名 ⇒ 一路重试到熔断。
         #   带上报错它一眼能看出根因 ✓（见 `_repeat_notes`）
         self._action_errors: dict[str, str] = {}
+        # ★★ 2026-10-13（绕 37 次那次）：动作输出的**指纹**，用来判断"这次结果和上次一样吗"。
+        #   一样 ⇒ 纯浪费（阈值提前一档，所有端点适用）；在变 ⇒ 算有进展（不动）✓
+        self._action_outputs: dict[str, str] = {}
+        self._last_output_repeated: bool = False
+        # ★★ 这个 provider 是不是**本机推理服务**（llama.cpp / ollama / LM Studio 这类小模型）。
+        #   用于给本地模型**单独收紧**重复阈值 —— 云端 API 行为一个字不动 ✓
+        #   （用户硬约束：「针对 27B 这种本地部署模型必须优化」+「别的 API 别降级」）
+        self.is_local_endpoint = _provider_is_local(provider)
         self.max_tokens = max_tokens
         self.max_context_tokens = max_context_tokens
         # ★ 2026-10-11（平台闸修复 ①）：**一条观察进 history 的上限** ✓
@@ -1120,8 +1269,22 @@ class TaskRun:
                     prev_error = self._action_errors.get(sig)
                     self._action_counts[sig] = self._action_counts.get(sig, 0) + 1
                     hit = self._action_counts[sig]
-                    _warn_at, _trip_at = _repeat_thresholds(self.max_iterations)
+                    # ★★ 2026-10-13（用户 task_20261013_0ea1f8de，绕 37 次那次）：
+                    #   阈值分两档收紧 —— **输出一字不差**（纯浪费，所有端点适用）
+                    #   与 **本地端点**（小模型，真机证据见 `_thresholds_with_escalation`）。
+                    #   ★ 云端 + 输出在变 ⇒ 与修复前**完全一致**（用户要求别的 API 不许降级）。
+                    #   ★★ "输出有没有变"用**上一次执行后存的输出**比（执行后写入
+                    #      `_action_outputs[sig]`）—— 上一次的输出与这一次的是否一字不差，
+                    #      就说明这个动作是不是在原地踏步 ✓
+                    _same = self._last_output_repeated
+                    _warn_at, _trip_at = _thresholds_with_escalation(
+                        self.max_iterations,
+                        is_local=self.is_local_endpoint,
+                        same_output=_same,
+                    )
                     verdict_kind = _repeat_verdict_for(hit, _warn_at, _trip_at)
+
+
                 if verdict_kind == "trip":
                     detail = _repeat_trip_message(name, hit, prev_error)
                     self.emit("error", {"message": detail, "code": "step_repetition"})
@@ -1177,10 +1340,24 @@ class TaskRun:
             output = self._redact(result.output)
             # ★ 2026-10-13：记下"这个动作上一次的报错"，供重复提醒原样带上。
             #   成功则清掉（成功还重复 = 重跑合理但浪费，不是"卡在同一个错"）。
-            if not result.ok:
+            #
+            #   ★★ 别只看 `result.ok`！真机事故（用户 task_20261013_0ea1f8de）：
+            #     模型跑的是
+            #         python data/generate_voice.py … > data/gen_01.log 2>&1; echo "exit=$?"; tail -2 data/gen_01.log
+            #     末尾 `tail` **成功了** ⇒ 整条命令退出码 0 ⇒ `ok=True`，
+            #     但它明明在反复失败（输出里 `exit=1` + `AttributeError: module 'inspect' …`）。
+            #     第一版修复因此**永远取不到报错**，新提醒一个字都显示不出来 ✗
+            #   ⇒ 判据补一条：**输出里带着失败痕迹，同样算报错**（仓里已有同款判据，见下方 _ran_shell）。
+            if _looks_like_failure(result.ok, output):
                 self._action_errors[sig] = output
             else:
                 self._action_errors.pop(sig, None)
+            # ★★ 记下这次输出，并判"与同动作上一次是否一字不差"（供下一次护栏用）✓
+            #   在执行**之后**算好存起来，护栏（执行前）直接读 `_last_output_repeated`。
+            _fp = _output_fingerprint(output)
+            _prev = self._action_outputs.get(sig)
+            self._last_output_repeated = (_prev is not None and _prev == _fp)
+            self._action_outputs[sig] = _fp
             self.emit("observation", {
                 "call_id": call_id,
                 "ok": result.ok,
