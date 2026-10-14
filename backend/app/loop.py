@@ -536,14 +536,40 @@ def _deliverables_incomplete(task_input: str, missing: list[str] | None = None) 
     return bool(missing)
 
 
-def _bump_kind_count(counts: dict[str, int], kind: str) -> int:
+def _bump_kind_count(counts: dict[str, int], kind: str,
+                     prev_failed: bool | None = None) -> int:
     """同类动作计数 —— **换了一类就把上一类清零**。
 
     ★ 为什么必须清零：换了另一类动作 = **真有进展**。
       不清零的话，后面再回到原来那一类时，旧计数还在 ⇒ 一动手就被误熔断 ✗
     ★ 空类别（认不出的动作）不动任何计数、返回 0 ✓
+
+    ★★ 2026-10-14 修（真机 `task_20261014_47344d15` 抓到的误熔断）：
+      **只有"上一次真的失败了"才累加；上一次成功了就清零** ✓
+
+      现场：那条任务的成片**已经做出来了**，它跑 `qa_video.py` 体检：
+        第 1 次 → `passed= False`（没过，它去修）
+        第 2 次 → `全部通过` ✓
+        之后又跑了几次**确认**（都是 ✓）
+      ⇒ 而旧口径**把"重跑体检"全算成绕圈** ⇒ 累计到 20 次就熔断、3 次后 giveup
+      ⇒ 任务停在 `partial`、**没走到 task_done** ⇒ 界面显示黄点 ✗
+
+      **护栏分不清"反复失败"和"反复验证"** —— 后者是负责任的正常行为，
+      按旧口径惩罚它，等于**惩罚它做验收** ✗（而验收正是这个技能的核心要求）
+
+      ⇒ 现在的口径：
+        · 上一次输出**像失败** → 累加（真在原地踏步）
+        · 上一次**成功**了       → **清零**（它是有进展的重复：跑了再跑、查了再查）✓
+        · `prev_failed=None`（没信息）→ 照旧累加（保守，不放松护栏）
     """
     if not kind:
+        return 0
+    if prev_failed is False:
+        # 上一次成功了 ⇒ 这一类**有进展** ⇒ 清零重数 ✓
+        counts[kind] = 0
+        for k in list(counts):
+            if k != kind:
+                counts[k] = 0
         return 0
     for k in list(counts):
         if k != kind:
@@ -897,6 +923,10 @@ class TaskRun:
         #   一样 ⇒ 纯浪费（阈值提前一档，所有端点适用）；在变 ⇒ 算有进展（不动）✓
         self._action_outputs: dict[str, str] = {}
         self._last_output_repeated: bool = False
+        # ★★ 2026-10-14：**上一次动作是成功还是失败** —— 同类计数靠它区分
+        #   「反复失败」（该拦）和「反复验证」（不该拦，那是负责任）✓
+        #   现场：成片已做出来，它跑 qa_video 体检确认几次 ⇒ 被当成绕圈熔断 ✗
+        self._last_output_repeated_failed: bool | None = None
         # ★ 2026-10-14：同类动作计数（_action_kind 归类）—— 治换参数重试型绕圈
         self._kind_counts: dict[str, int] = {}
         # ★ 同一类动作反复熔断的计数（到 _KIND_GIVEUP_AFTER 才真停）
@@ -1560,7 +1590,14 @@ class TaskRun:
                     _kind_now = _action_kind(name, args)
                     kind_hit = 0
                     if _kind_now:
-                        kind_hit = _bump_kind_count(self._kind_counts, _kind_now)
+                        # ★★ 2026-10-14：**"上一次成功了"就不算绕圈** ✓
+                        #   现场（task_20261014_47344d15）：成片已做出来，它跑 qa_video 体检
+                        #   第 1 次没过 → 去修 → 第 2 次通过 → 之后又跑几次**确认**（都通过）
+                        #   旧口径把"重跑体检"全算成绕圈 ⇒ 熔断 ⇒ 没走到 task_done ⇒ partial ✗
+                        #   ⇒ 护栏不该惩罚"反复验证"（验收正是这技能的核心要求）✓
+                        _prev_failed = self._last_output_repeated_failed
+                        kind_hit = _bump_kind_count(self._kind_counts, _kind_now,
+                                                    prev_failed=_prev_failed)
                         _kw, _kt = _kind_thresholds(self.max_iterations)
                         _kverdict = _repeat_verdict_for(kind_hit, _kw, _kt)
                         # 同类熔断**优先级更高**（方法层面卡死，比"命令写重了"严重）
@@ -1673,8 +1710,13 @@ class TaskRun:
             #   ⇒ 判据补一条：**输出里带着失败痕迹，同样算报错**（仓里已有同款判据，见下方 _ran_shell）。
             if _looks_like_failure(result.ok, output):
                 self._action_errors[sig] = output
+                self._last_output_repeated_failed = True
             else:
                 self._action_errors.pop(sig, None)
+                # ★★ 2026-10-14：记下"这一次成功了" —— 同类计数看到它就会清零 ✓
+                #   （护栏不该把"重跑体检确认"当成绕圈 —— 真机 task_20261014_47344d15
+                #     成片已做出来，它跑 qa 确认几次就被熔断、没走到 task_done ✗）
+                self._last_output_repeated_failed = False
             # ★★ 记下这次输出，并判"与同动作上一次是否一字不差"（供下一次护栏用）✓
             #   在执行**之后**算好存起来，护栏（执行前）直接读 `_last_output_repeated`。
             _fp = _output_fingerprint(output)
