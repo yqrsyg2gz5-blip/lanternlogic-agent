@@ -53,6 +53,8 @@
 const W = 1080, H = 1920, FPS = 30;
 const DURATION = 20.0;            // ★ 改这里换时长（记得同步改场景表）
 const BEAT = 0.5;                 // 120 BPM ⇒ 每 0.5 秒一拍
+// ★ 全片总拍数（给底部刻度用）—— **从时长算，不许写死**
+const TOTAL_BEATS = Math.round(DURATION / BEAT);
 
 const cv = document.getElementById('stage');
 const g = cv.getContext('2d');
@@ -198,17 +200,33 @@ function uiWall(t, cols, rows, yBase, alpha) {
   g.restore();
 }
 
-/* ★ 底部：时间码 + 拍点进度条（卡点看得见）*/
+/* ★ 底部：**只有拍点进度条**（卡点看得见，但不出现"第 N 拍"这种计数文字）
+ *
+ * ★★ 2026-10-15 用户反馈（去掉计数文字）：
+ *   「你看看他那底下有个什么什么拍，那个能不能去掉？
+ *     这一看就像**拿图拼拼凑起来的**那个，到时候不要。」
+ *
+ *   ⇒ 观众看到「第 43 拍 / 120」会立刻意识到"这是拼的"，而不是一条成片 ✗
+ *   ⇒ **时间码（0.0s）也一并去掉** —— 同一个毛病（旁白式计数器）✗
+ *   ⇒ 但**进度条要留**：它靠"每拍跳一格"把卡点做在画面里，
+ *     是"看得见卡点"的正当实现，不是计数器 ✓
+ */
 function hud(t, accent) {
-  const beat = Math.floor(t / BEAT);
   g.save();
-  g.font = `600 36px ${MONO}`; g.fillStyle = C.dim; g.textAlign = 'left';
-  g.textBaseline = 'middle'; g.fillText(`${t.toFixed(1)}s`, 90, H-108);
-  g.textAlign = 'right'; g.fillText(`第 ${beat} 拍`, W-90, H-108);
-  g.restore();
-  g.fillStyle = 'rgba(255,255,255,.08)'; g.fillRect(90, H-76, W-180, 5);
+  // 底槽
+  g.fillStyle = 'rgba(255,255,255,.08)';
+  g.fillRect(90, H - 76, W - 180, 5);
+  // 已播进度（随拍点跳格 —— 这是"卡点看得见"的部分，保留）
   g.fillStyle = accent;
-  g.fillRect(90, H-76, (W-180) * (1 - (t % BEAT) / BEAT), 5);
+  g.fillRect(90, H - 76, (W - 180) * (1 - (t % BEAT) / BEAT), 5);
+  // ★ 每拍一个小刻度（让"拍"看得出来，但不用文字说）
+  g.fillStyle = 'rgba(255,255,255,.22)';
+  const per = (W - 180) / TOTAL_BEATS;
+  for (let i = 1; i < TOTAL_BEATS; i++) {
+    if (i % 4 === 0) g.fillRect(90 + per * i, H - 82, 2, 17);   // 小节头长一点
+    else g.fillRect(90 + per * i, H - 79, 1, 11);
+  }
+  g.restore();
   g.textAlign = 'left';
 }
 

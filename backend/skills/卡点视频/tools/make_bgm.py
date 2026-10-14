@@ -53,22 +53,32 @@ SAMPLE_RATE = 44100
 #:   ⇒ 应对：**每 4 拍压一个更重的重音**（= 一小节一个强拍），
 #:     让"小节"在音频里**听得出来** ⇒ 检测器有更明确的层级可用，少犯八度错 ✓
 STYLES: dict[str, dict] = {
-    # 卡点：重 kick + hat，节奏感强，适合快剪
+    # 卡点：重 kick + 反拍军鼓 + 亮 hat，节奏感强，适合快剪
+    #
+    # ★★ 2026-10-15 重调（用户批「音乐慢悠悠」「卡点卡不出来」）：
+    #   上一版实测频段能量 —— 低频 3631 / 中频（旋律）734
+    #   ⇒ **低音比旋律大 5 倍** ⇒ 听着是"轰"不是"点" ✗
+    #   改法：kick/sub 降下来、pad/lead 抬上去、再叠一层中频 pluck，
+    #         并且 kick 用**短促音头**（decay 快）+ 反拍军鼓 ⇒ 每拍"点"得出来 ✓
     "beat": {
-        "kick_gain": 0.30, "kick_decay": 26.0, "hat_gain": 0.07,
-        "pad_gain": 0.10, "pad_decay": 2.0, "sub_gain": 0.05,
+        "kick_gain": 0.17, "kick_decay": 34.0, "hat_gain": 0.055,
+        "pad_gain": 0.22, "pad_decay": 1.6, "sub_gain": 0.015,
+        "snare_gain": 0.14,          # ★ 反拍军鼓（2、4 拍）—— 有它就"跳"起来
+        "pluck_gain": 0.15,          # ★ 中频琶音 —— 抬中频、给"节奏感"
         "kick_every": 1, "hat_every": 2, "accent_every": 4,
     },
     # 口播：垫底更轻、打击更少，**不抢人声**（后面还要 ducking）
     "voiceover": {
-        "kick_gain": 0.15, "kick_decay": 30.0, "hat_gain": 0.03,
-        "pad_gain": 0.12, "pad_decay": 1.4, "sub_gain": 0.04,
+        "kick_gain": 0.12, "kick_decay": 36.0, "hat_gain": 0.025,
+        "pad_gain": 0.16, "pad_decay": 1.2, "sub_gain": 0.02,
+        "snare_gain": 0.05, "pluck_gain": 0.04,
         "kick_every": 2, "hat_every": 4, "accent_every": 8,
     },
     # 温柔：长音铺底，几乎不打击
     "warm": {
-        "kick_gain": 0.08, "kick_decay": 34.0, "hat_gain": 0.015,
-        "pad_gain": 0.16, "pad_decay": 0.9, "sub_gain": 0.03,
+        "kick_gain": 0.06, "kick_decay": 40.0, "hat_gain": 0.012,
+        "pad_gain": 0.18, "pad_decay": 0.9, "sub_gain": 0.015,
+        "snare_gain": 0.02, "pluck_gain": 0.02,
         "kick_every": 4, "hat_every": 8, "accent_every": 8,
     },
 }
@@ -164,6 +174,51 @@ def synthesize(path: str | Path, *, seconds: float, bpm: float,
                 f = 48.0 + 42.0 * math.exp(-tt * 24.0)
                 buf[k] += kg * e * math.sin(2.0 * math.pi * f * tt)
         b += 1
+
+    # ── ★★★ 反拍军鼓（2、4 拍）—— 治「音乐慢悠悠」（2026-10-15 新增）──
+    #
+    #   用户原话：「**音乐也是就是弄得慢悠悠的**」
+    #   实测上一版频段能量：低频 3631 / 中频（旋律）734 ⇒ 低音比旋律大 5 倍
+    #   ⇒ 只有"轰"，没有"跳"。**军鼓打反拍**是流行/电子里让人"点头"的关键：
+    #     底鼓在 1、3 拍，军鼓在 2、4 拍 ⇒ 一正一反 ⇒ 立刻有推进感 ✓
+    snare_gain = float(cfg.get("snare_gain") or 0.0)
+    if snare_gain > 0.0:
+        b = 0
+        while b * beat_s < seconds:
+            # 每小节第 2、4 拍（1-based 的 2 和 4 ⇒ 0-based 的 1 和 3）
+            if b % 4 in (1, 3):
+                t0 = b * beat_s
+                k0 = int(t0 * sr)
+                k1 = min(n, int((t0 + 0.18) * sr))
+                seed = 777 + b * 104729
+                for k in range(k0, k1):
+                    tt = (k - k0) / sr
+                    seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+                    noise = (seed / 0x3FFFFFFF) - 1.0
+                    # 军鼓 = 噪声（沙沙）+ 一点 200Hz 鼓皮音
+                    body = math.sin(2.0 * math.pi * 200.0 * tt)
+                    e = _env_attack_decay(tt, 42.0, 0.001)
+                    buf[k] += snare_gain * e * (0.85 * noise + 0.35 * body)
+            b += 1
+
+    # ── ★★ 中频琶音 pluck（抬中频、给"节奏感"）── 治「低音压死旋律」──
+    pluck_gain = float(cfg.get("pluck_gain") or 0.0)
+    if pluck_gain > 0.0:
+        # 每拍一个音，音高在和弦音里绕 —— 中频（约 220~660 Hz）
+        arp_notes = [220.0, 277.18, 329.63, 440.0, 329.63, 277.18]
+        b = 0
+        while b * beat_s < seconds:
+            t0 = b * beat_s
+            k0 = int(t0 * sr)
+            k1 = min(n, int((t0 + 0.12) * sr))
+            f0 = arp_notes[b % len(arp_notes)]
+            g = pluck_gain * (1.35 if b % 4 == 0 else 1.0)
+            for k in range(k0, k1):
+                tt = (k - k0) / sr
+                e = _env_attack_decay(tt, 55.0, 0.001)     # 短促 ⇒ 像拨弦
+                buf[k] += g * e * (math.sin(2.0 * math.pi * f0 * tt)
+                                   + 0.3 * math.sin(2.0 * math.pi * f0 * 2.0 * tt))
+            b += 1
 
     # ── hat（高频，给节奏"颗粒"）★ 也落在网格上 ──
     #
