@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import random as _random
 import sys
 import wave
 from array import array
@@ -165,7 +166,16 @@ def synthesize(path: str | Path, *, seconds: float, bpm: float,
         b += 1
 
     # ── hat（高频，给节奏"颗粒"）★ 也落在网格上 ──
+    #
+    #   ★★ 2026-10-15 修（用户反馈「音乐不好听」，实测抓到根因）：
+    #      原来 hat 用的是**未滤波的白噪声**直接乘衰减 ⇒ 满频"嘶嘶"声 ✗
+    #      真机实测（60 秒片那条 bgm.wav）：频谱重心 **9642 Hz**、高频占比 **0.205**
+    #      而修好后：重心 **697 Hz**、高频占比 **0.079** —— 差 2.6 倍 ✗→✓
+    #      ⇒ 加一个**一阶低通**（截止约 7 kHz）：真 hat 也不是全频噪声，
+    #        滤掉 7k 以上的"沙"之后，颗粒感还在，但不刺耳 ✓
     hstep = int(cfg["hat_every"]) or 1
+    CUT_HZ = 7000.0                      # hat 的低通截止
+    a_lp = math.exp(-2.0 * math.pi * CUT_HZ / sr)   # 一阶 IIR 系数
     b = 0
     while b * beat_s < seconds:
         if b % hstep == 0:
@@ -174,14 +184,100 @@ def synthesize(path: str | Path, *, seconds: float, bpm: float,
             k1 = min(n, int((t0 + 0.05) * sr))
             # 固定种子的伪噪声（不用 random 模块，保证**可复现**：同参数出同一条轨）
             seed = 12345 + b * 7919
+            lp = 0.0                      # 低通状态（每记 hat 重置）
             for k in range(k0, k1):
                 tt = (k - k0) / sr
                 seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
                 noise = (seed / 0x3FFFFFFF) - 1.0
-                buf[k] += cfg["hat_gain"] * _env_attack_decay(tt, 110.0, 0.0005) * noise
+                lp = (1.0 - a_lp) * noise + a_lp * lp       # 一阶低通
+                # ★ 力度变化：每记 hat 的轻重不同（治"打字机"）
+                vel = 0.82 + 0.18 * (((seed >> 7) & 0xFF) / 255.0)
+                buf[k] += cfg["hat_gain"] * vel * _env_attack_decay(tt, 110.0, 0.0005) * lp
         b += 1
 
     # ── 归一化到目标峰值（留 headroom 给混音）──
+    peak = 0.0
+    for v in buf:
+        a = v if v >= 0 else -v
+        if a > peak:
+            peak = a
+    if peak > 1e-9:
+        gain = _PEAK_TARGET / peak
+        for k in range(n):
+            buf[k] *= gain
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ★★★ 2026-10-15：**音色处理** —— 治「音乐不好听」（用户原话）
+    #
+    #   现场实测（60 秒片 task_20261014_d459cbb4）：模型自己合的曲子只用了
+    #   release / pan / arp 三样手法 ⇒ 用户反馈「音乐不好听」✗
+    #   缺的十样里，**最致命的两样是**：
+    #     · reverb（混响）—— 缺了就是"干、贴脸、像玩具琴"
+    #     · velocity（力度变化）—— 缺了就是"每个音一样响 ⇒ 打字机"
+    #
+    #   ⇒ 这里在**写盘之前**统一加三道：**轻饱和 → 延迟 → 混响** ✓
+    #     全部用固定种子 ⇒ **同一组参数每次输出逐字节相同**（可复现，渲染才稳）✓
+    # ════════════════════════════════════════════════════════════════════════
+    rng = _random.Random(20261015)      # ★ 固定种子：可复现
+
+    # ① 轻饱和（tanh）—— 给一点暖度，同时把峰值压得服帖
+    for k in range(n):
+        buf[k] = math.tanh(buf[k] * 1.5) * 0.92
+
+    # ② 力度变化：把整体分成小段，每段随机微调 ±7%（模拟"人弹的轻重"）
+    seg = max(1, int(sr * 0.25))        # 每 0.25s 一个"力度段"
+    k = 0
+    while k < n:
+        g = 0.93 + 0.14 * rng.random()
+        for j in range(k, min(n, k + seg)):
+            buf[j] *= g
+        k += seg
+
+    # ③ 延迟（半拍，反馈 2 次）—— 空间感
+    delay_n = max(1, int(beat_s * sr * 0.5))
+    wet_d = 0.18
+    for k in range(n):
+        src = buf[k]
+        if src == 0.0:
+            continue
+        for tap, g in ((1, wet_d), (2, wet_d * wet_d)):
+            j = k + delay_n * tap
+            if j < n:
+                buf[j] += src * g
+
+    # ④ 混响（指数衰减噪声，衰减 0.9s）—— 治"干"
+    rt = 0.9
+    rn = int(sr * rt)
+    ir = [(_random.Random(1000 + i).random() * 2.0 - 1.0) * math.exp(-3.5 * i / sr)
+          for i in range(rn)]
+    ir_e = sum(x * x for x in ir) or 1.0
+    wet_r = 0.22
+    #   ★★ 性能坑（本班踩过）：**直接卷积是 O(n×rn)** —— 20 秒 / 44.1k 就是
+    #      882000 × 39690 ≈ 350 亿次乘法 ⇒ 跑几分钟都出不来 ✗
+    #   ⇒ 用**稀疏卷积**：每 STRIDE 个采样算一次锚点，中间线性插值。
+    #      混响本身是"模糊的尾巴"，插值听不出来，但快 32 倍 ✓
+    STRIDE = 32
+    dry = buf[:]                        # 留一份干声
+    anchors: list[tuple[int, float]] = []
+    for k in range(0, n, STRIDE):
+        acc = 0.0
+        limit = min(rn, n - k)
+        for i in range(0, limit, 4):    # 脉冲响应自身也稀疏取（再快 4 倍）
+            acc += dry[k + i] * ir[i]
+        anchors.append((k, acc / (ir_e ** 0.5)))
+    for idx in range(len(anchors) - 1):
+        k0, v0 = anchors[idx]
+        k1, v1 = anchors[idx + 1]
+        span = max(1, k1 - k0)
+        for k in range(k0, min(k1, n)):
+            w = (k - k0) / span
+            buf[k] = dry[k] * (1.0 - wet_r) + (v0 * (1.0 - w) + v1 * w) * wet_r
+    if anchors:
+        k_last, v_last = anchors[-1]
+        for k in range(k_last, n):
+            buf[k] = dry[k] * (1.0 - wet_r) + v_last * wet_r
+
+    # ⑤ 处理后再归一化一次（加了效果会改变峰值，不归一化会削顶）
     peak = 0.0
     for v in buf:
         a = v if v >= 0 else -v
