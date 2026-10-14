@@ -25,6 +25,105 @@ from ..mcp import _CHILD_ENV_KEYS
 from ..ssrf import SsrfBlocked, assert_public_url, browser_request_allowed, recheck_still_public
 from ..winconsole import NO_WINDOW_CREATIONFLAGS
 
+# ════════════════════════════════════════════════════════════════════════════
+# ★★ 全盘扫描硬拦（2026-10-14 真机事故复发，用户机器上烧了 6.2 小时 CPU）
+#
+#   现场（三个**孤儿**进程，父进程退出后还在扫）：
+#     find / -maxdepth 6 -name SKILL.md -path *卡点*   → 烧 7,816 秒 CPU
+#     find / -maxdepth 6 -name qa_video.py             → 烧 7,320 秒 CPU
+#     find / -maxdepth 6 -type d -iname *卡点*         → 烧 7,112 秒 CPU
+#   ⇒ CPU 负载 18%、用户的风扇一直转 ✗
+#
+#   **技能文档里早就写明「⛔ 绝对不要扫全盘」，而且把这三条原样当反例列着** ——
+#   但它还是做了，还专挑 `-maxdepth 6` 这种"看起来有节制"的写法 ✗
+#   ⇒ 文档办不到的事，**在执行层拦** ✓
+# ════════════════════════════════════════════════════════════════════════════
+
+#: 搜索类命令里"根"长什么样：
+#:   `/` · `//` · `C:\` · `C:/`  —— 以及 **git bash 的盘符写法 `/c` `/d/`** ✓
+#:   （真机那三条就是 git bash 下跑的；`/c` 这种不认出来会漏 ✗）
+_ROOTISH = re.compile(r"^(?:/+|[a-zA-Z]:(?:[\\/]+)?|/[a-zA-Z]/?)$")
+#: 会走全盘的搜索命令（find / grep / rg / ls -R）
+_SCAN_CMD = re.compile(r"(^|[;&|({]\s*)(find|grep|egrep|rg|ls)\b", re.I)
+
+
+def whole_disk_scan_reason(command: str) -> str:
+    """这条命令是不是在**从文件系统根**做扫描？是就返回中文理由，不是返回空串 ✓
+
+    ★ 判据要准（不许误伤正常操作）：
+      · 拦：搜索根是 `/` 或盘符根 —— `find / …`、`ls -R /`、`grep -r x /`、`cd / && find .`
+      · 放行：搜索根是当前目录或工作区子路径 —— `find . -maxdepth 3`、`find tools/ -name x` ✓
+    """
+    cmd = str(command or "")
+    if not cmd.strip():
+        return ""
+    segs = re.split(r";|&&|\|\|", cmd)
+    went_root = False
+    for seg in segs:
+        s = seg.strip()
+        if not s:
+            continue
+        # `cd /` / `cd /c` / `cd C:\` ⇒ 后面就站在根上了
+        m = re.match(r"cd\s+(?:-\w+\s+)*([^\s;&|]+)", s)
+        if m:
+            arg = m.group(1).strip("\"'")
+            if _ROOTISH.match(arg):
+                went_root = True
+                continue
+        # ★ 注意：这里**不能**给 s 前面补空格 —— 补了之后 `(^|...)` 就匹配不上，
+        #   而 `\b` 在"空格后面"也不是边界 ⇒ `find / …` 会被漏掉 ✗（本班踩过）
+        if not _SCAN_CMD.search(s):
+            continue
+        toks = s.replace("(", " ").replace(")", " ").split()
+        ci = None
+        for i, t in enumerate(toks):
+            if re.fullmatch(r"find|grep|egrep|rg|ls", t, re.I):
+                ci = i
+                break
+        if ci is None:
+            continue
+        # ★ 取"搜索根"：
+        #   · find / ls  → **第一个**非选项参数就是搜索根（`find / -maxdepth 6 …`）
+        #   · grep / rg  → 路径通常在**最后**（`grep -r foo /`）⇒ 两个位置都看一眼 ✓
+        #   · 选项后面跟的值（`-maxdepth 6` / `-name x`）**不是**根，必须跳过 ✗（本班踩过）
+        opt_with_value = ("-maxdepth", "-mindepth", "-name", "-iname", "-path", "-ipath",
+                          "-type", "-size", "-mtime", "-newer", "-exec", "-user", "-group",
+                          "-e", "-f", "-m", "-A", "-B", "-C", "--include", "--exclude",
+                          "--exclude-dir", "--include-dir", "-t", "--type")
+        positional: list[str] = []
+        skip_next = False
+        for t in toks[ci + 1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if t.startswith("-"):
+                if t in opt_with_value:
+                    skip_next = True
+                continue
+            positional.append(t.strip("\"'"))
+        is_grepish = toks[ci].lower() in ("grep", "egrep", "rg")
+        cands = [positional[-1]] if (is_grepish and positional) else positional[:1]
+        for root in cands:
+            if root and _ROOTISH.match(root):
+                return (
+                    f"拒绝执行：这条命令**从文件系统根扫描**（搜索根 {root!r}）—— "
+                    f"会扫遍所有盘、吃满 CPU，而且**可能永远跑不完**（真机事故：三个这样的 "
+                    f"find 烧掉 6.2 小时 CPU，父进程都退出了它们还在扫）✗\n"
+                    f"  · 你要找的东西**都在已知位置**，别搜：技能自带的脚本就在**本任务工作区的 "
+                    f"tools/ 目录**里 ✓\n"
+                    f"  · 真要搜，**只许在自己工作区里搜**：`find . -maxdepth 3 -name xxx`"
+                    f"（`.` 开头，不是 `/`）✓\n"
+                    f"  · 找 ffmpeg / 解释器这类，跑 `python tools/ffmpeg_path.py`，"
+                    f"或看技能里的「已知位置」对照表 ✓"
+                )
+        if went_root and (not root or root == "."):
+            return (
+                "拒绝执行：前面 `cd` 到了**文件系统根**，后面又做搜索 ⇒ 等于全盘扫描 ✗\n"
+                "  · 改成在自己工作区里搜：`find . -maxdepth 3 -name xxx` ✓"
+            )
+    return ""
+
+
 # 二十六轮第 7 批第 3 处：_web_fetch 的响应体硬上限（按【已读字节数】判，
 # 不依赖 content-length——无 CL 的 chunked 响应此前完全不受限）。
 _WEB_FETCH_MAX_BYTES = 5_000_000
@@ -793,6 +892,10 @@ class LocalExecutor(Executor):
     async def _shell(self, workdir: Path, command: str, cfg_shell: str = "") -> str:
         if not command.strip():
             raise ValueError("command 不能为空")
+        # ★★ 全盘扫描硬拦（2026-10-14）：文档拦不住，这里拦 ✓
+        _scan = whole_disk_scan_reason(command)
+        if _scan:
+            return _scan
         if self.sandbox == "docker":  # 沙箱模式：命令进容器（第 41 班实装，状态卡已定设计）
             return await self._shell_sandbox(workdir, command)
         env = _child_env()  # K3：白名单环境（剔除 *_API_KEY/*_TOKEN/*SECRET 等）

@@ -2612,9 +2612,65 @@ async def create_task(req: CreateTaskReq) -> TaskSummary:
     return _launch_task(req.input, req.project_id, system_extra=sys_extra, role=role)
 
 
+#: 卡点视频这类任务的**标准交付清单**（十项 —— 与技能里的交付清单一字不差）✓
+_DELIVERABLES: tuple[str, ...] = (
+    "out/final.mp4", "data/script.md", "data/bgm.wav", "data/beats.json",
+    "data/vo_full.json", "out/douyin/hook.txt", "out/douyin/title.txt",
+    "out/douyin/desc.txt", "out/douyin/cover.txt", "out/qa/qa-report.md",
+)
+
+
+def task_delivery_state(workspace: "os.PathLike[str] | str") -> str:
+    """★★ 这个任务的**交付物**齐不齐？—— 看**文件在不在**，不看进程怎么结束 ✓
+
+    为什么要有它（2026-10-14 用户要求，原话）：
+
+        做好了就得交互，就得显示绿点。你他妈没做好，**或者是做好你就做好了，
+        你还显示红点，那是不是就表示没交付啊？产物里什么东西也没有**
+
+    现场：	ask_20261014_332781e8 —— 十项交付物齐全、成片 4.7 MB、体检退出码 0，
+    但因为进程被重启掐断，status 写成 ailed ⇒ 界面按 status 上色 ⇒ **红点** ✗
+    ⇒ 用户看到一片红，以为成功率很低、以为产物里什么都没有 ✗
+
+    返回（四个值，够界面用了）：
+        delivered —— 清单齐了（最强证据）✓
+        partial   —— 有成片，但文档类没齐
+        
+one      —— 一个交付物都没有
+        unknown   —— 工作区不存在/读不了（**不许谎报成 delivered** ✗）
+    """
+    from pathlib import Path as _P
+    try:
+        ws = _P(workspace)
+        if not ws.is_dir():
+            return "unknown"
+        have = [f for f in _DELIVERABLES if (ws / f).exists()]
+        if len(have) == len(_DELIVERABLES):
+            return "delivered"
+        if (ws / "out" / "final.mp4").exists():
+            return "partial"
+        if have:
+            return "partial"
+        return "none"
+    except Exception:
+        return "unknown"
+
+
 @app.get("/api/v1/tasks")
 async def list_tasks() -> list[TaskSummary]:
-    return sorted(tasks.values(), key=lambda t: t.created_at, reverse=True)
+    # ★★ 2026-10-14（用户要求）：**交付物齐了就该显示"已完成"**，不管进程怎么结束的 ✓
+    #   现场：task_20261014_332781e8 十项交付物齐全 + 成片 4.7 MB，
+    #   却因为进程被重启掐断、status 写成 failed ⇒ 界面显示**红点** ✗
+    #   ⇒ 用户看到一片红，以为"没交付、产物里什么都没有" ✗
+    #   这里把「交付物齐不齐」这个**事实**一并给出，前端据此上色 ✓
+    out: list[TaskSummary] = []
+    for t in sorted(tasks.values(), key=lambda x: x.created_at, reverse=True):
+        try:
+            t.delivered = task_delivery_state(store.workspace_dir(t.id))
+        except Exception:
+            t.delivered = "unknown"
+        out.append(t)
+    return out
 
 
 @app.get("/api/v1/tasks/{task_id}")

@@ -28,6 +28,44 @@ const STATUS_DOT: Record<TaskStatus, string> = {
   partial: 'dot-yellow',
 };
 
+/**
+ * ★★ 2026-10-14（用户要求）：**交付物齐了就该显示绿点**，不管进程怎么结束的 ✓
+ *
+ * 用户原话：「做好了就得交互，就得显示绿点。你他妈没做好，**或者是做好你就做好了，
+ *            你还显示红点，那是不是就表示没交付啊？产物里什么东西都没有**」
+ *
+ * 现场：`task_20261014_332781e8` —— 十项交付物齐全、成片 4.7 MB、体检退出码 0，
+ * 却因为进程被重启掐断、`status` 写成 `failed` ⇒ 按 status 上色就是**红点** ✗
+ * ⇒ 用户看到一片红，以为成功率很低 ✗
+ *
+ * 判据（**交付优先于进程状态**）：
+ *   · 交付物齐全（`delivered === 'delivered'`）⇒ **绿**（活干完了就是干完了）✓
+ *   · 有成片但文档没齐（`'partial'`）          ⇒ 黄（做了一部分，诚实）✓
+ *   · 一个交付物都没有（`'none'`）              ⇒ 按进程状态上色（红/黄）✓
+ *   · 算不出来（`''` / `'unknown'`）            ⇒ 按进程状态上色（**不许谎报成绿** ✗）
+ */
+function dotFor(t: TaskSummary): string {
+  if (t.status === 'running' || t.status === 'waiting_approval' || t.status === 'created') {
+    return STATUS_DOT[t.status]; // 在跑的照旧（别把"正在跑"画成绿的）
+  }
+  if (t.delivered === 'delivered') return 'dot-green';
+  if (t.delivered === 'partial') return 'dot-yellow';
+  return STATUS_DOT[t.status];
+}
+
+/** 圆点的中文说明（悬停可见）—— 让人一眼看懂为什么是这个颜色 ✓ */
+function dotTitle(t: TaskSummary): string {
+  if (t.status === 'running') return '正在跑';
+  if (t.status === 'waiting_approval') return '等你审批';
+  if (t.status === 'created') return '排队中';
+  if (t.delivered === 'delivered') {
+    return t.status === 'done' ? '已完成 · 交付物齐全' : '已交付 · 交付物齐全（进程被中断）';
+  }
+  if (t.delivered === 'partial') return '部分交付（有成片，文档没齐）';
+  if (t.delivered === 'none') return '没有产出任何交付物';
+  return t.status === 'failed' ? '失败' : '未完成';
+}
+
 function relTime(iso: string): string {
   // 第 41 班（用户定稿）：紧凑相对标签——刚刚 / N分钟前 / 今天 / 昨天 / N天前 / 日期
   const d = new Date(iso);
@@ -205,7 +243,7 @@ export function Sidebar({ tasks, currentId, onSelect, onDeleteTask, onNewChat, o
                 onClick={() => { onSelect(t.id); onNavigate?.(); }}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelect(t.id); }}
               >
-                <span className={`dot ${STATUS_DOT[t.status]}`} />
+                <span className={`dot ${dotFor(t)}`} title={dotTitle(t)} />
                 <span className="taskitem-title">{t.title}</span>
                 <span className="taskitem-actions">
                   <button

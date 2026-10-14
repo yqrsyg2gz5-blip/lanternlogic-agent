@@ -57,6 +57,11 @@ class TaskSummary(BaseModel):
     updated_at: str
     project_id: str | None = None  # 所属项目（配置注入来源）
     pinned: bool = False  # 置顶（第 41 班：侧栏排序置顶）
+    # ★★ 2026-10-14（用户要求）：**交付物齐不齐**（"delivered" / "partial" / "none" / "unknown"）
+    #   为什么要有它：界面原来只看 status（进程怎么结束的）⇒ 交付物齐全但被中断的任务
+    #   显示**红点**，用户以为"没交付、产物里什么都没有"✗
+    #   真机：task_20261014_332781e8 十项齐全 + 成片 4.7 MB，却是一片红 ✗
+    delivered: str = ""
 
 
 # ============ 请求体 ============

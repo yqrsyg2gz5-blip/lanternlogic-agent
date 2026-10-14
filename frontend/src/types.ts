@@ -134,6 +134,14 @@ export interface TaskSummary {
   updated_at: string;
   project_id?: string;
   pinned?: boolean; // 所属项目（配置注入来源）
+  /** ★★ 2026-10-14：**交付物齐不齐**（后端算好的事实，别在前端猜）
+   *  · delivered = 清单齐了 ✓
+   *  · partial   = 有成片但文档没齐
+   *  · none      = 一个交付物都没有
+   *  · '' / unknown = 算不出来（不许当成 delivered ✗）
+   *  为什么要有它：界面原来只看 status ⇒ 交付物齐全但被中断的任务显示**红点**，
+   *  用户以为没交付、产物里什么都没有✗（真机 task_20261014_332781e8）*/
+  delivered?: string;
 }
 
 // ============ 项目（配置注入）============
