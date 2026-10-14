@@ -323,6 +323,235 @@ def _action_signature(name: str, args: dict[str, Any]) -> str:
     return f"{name}::{blob}"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ★★ 同类动作的绕圈检测（2026-10-14 真机事故）
+#
+# ## 为什么精确签名不够
+#
+# 真机：一条 20 秒片跑了 73 分钟 / 368 步 / 360 步上限熔断，按动作归并后
+# **≈60% 的步数**（88 次试字体 + 76 次画一帧 + 52 次抽帧）全耗在
+# **一个字符显示不出来**上 ✗
+#
+# 而那 88 次**每次命令行都不一样**（换个字体名、换个字号）：
+#
+#     第 1 次  ImageFont.truetype('C:/Windows/Fonts/msyhbd.ttc', 48)
+#     第 2 次  ImageFont.truetype('C:/Windows/Fonts/arialbd.ttf', 48)   ← 签名不同 ✗
+#     第 3 次  ImageFont.truetype('C:/Windows/Fonts/simhei.ttf', 48)    ← 签名又不同 ✗
+#
+# ⇒ `_action_signature` 认为这是 88 个**不同**动作 ⇒ 护栏一次都没响 ✗
+#
+# ## 判据刻意**窄**（宁可漏判，不可误伤）
+#
+# 只认这几种"一眼能看出在干什么"的形态；认不出的返回空串 ⇒ 不参与计数（fail-open）✓
+# 用户明确要求"别的 API 不许降级"，所以：
+#   · 同类阈值**明显宽于**精确重复阈值（12/20 vs 5/8）
+#   · 且**不随预算膨胀**（预算 360 时基线跟着涨 ⇒ 护栏形同虚设，真机就是这么烧的）
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: (类别名, 正则) —— 顺序有意义：先匹配到的算数
+_ACTION_KINDS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    # 试字体 / 量字体（真机 88 次的那个）
+    ("试字体/量字体", re.compile(r"ImageFont|truetype|getbbox|getlength|font\s*=|\bfont\(", re.I)),
+    # 画一帧看效果
+    ("画一帧看效果", re.compile(r"ImageDraw|Image\.new|\.save\(|Image\.open", re.I)),
+    # 转码 / 抽帧 / 探测媒体
+    ("媒体转码抽帧", re.compile(r"\bffmpeg\b|\bffprobe\b", re.I)),
+    # 语音合成
+    ("语音合成", re.compile(r"edge[_-]tts|make_vo|SpeechSynthesizer", re.I)),
+    # 生成音乐
+    ("生成音乐", re.compile(r"make_bgm|合成音乐|synth", re.I)),
+    # 节拍检测
+    ("节拍检测", re.compile(r"beatmap|audio-analysis", re.I)),
+    # ★ 渲染帧：**必须是"调渲染器"这个动作**，不能只看文件名 ✗
+    #   真机事故（2026-10-14）：`sed -n '130,200p' tools/render/render.mjs`（**在读源码**）
+    #   被旧正则 `render\.mjs` 归成「渲染帧」⇒ 读了 21 次就被熔断 ✗
+    #   ⇒ 要求命令行里出现"执行"的迹象（node/nodejs）**或**渲染器自己的输出文件名 ✓
+    ("渲染帧", re.compile(r"\bnode\b.*render\.mjs|\brender_frames\b|playwright", re.I)),
+)
+
+#: ★★ 纯"侦察类"命令（读文件 / 看目录 / 找东西）—— **一律不计入同类绕圈** ✗
+#
+#  为什么（2026-10-14 真机事故）：模型为了搞懂某个工具怎么用，会反复
+#  `sed -n '130,200p' tools/render/render.mjs` / `grep -n xxx tools/qa_video.py`——
+#  那是**学习**，不是绕圈。把它算成"渲染帧试了 21 次"直接熔断，
+#  等于**惩罚它读文档** ✗（而技能手册本身就在教它先读工具的用法 ✓）
+#  ⇒ 侦察命令只受"精确重复"护栏约束（那条按命令原文计数，真重复才拦），
+#    **不受同类绕圈约束** ✓
+_RECON_HEADS = re.compile(
+    r"^\s*(cd\s+[^&|;]+&&\s*)?"
+    r"(sed|cat|head|tail|less|more|grep|egrep|rg|awk|wc|ls|dir|find|stat|file|"
+    r"which|type|command\s+-v|diff|md5sum|sha1sum|shasum|xxd|od)\b",
+    re.I,
+)
+
+#: 同类动作的阈值（**不随预算变** —— 真机教训：预算 360 时基线涨到 60 ⇒ 拦不住）
+_KIND_WARN_AT = 12
+_KIND_TRIP_AT = 20
+
+#: 同一类动作**反复熔断**多少次才真的停（打断后换条路又绕回来才算一次）。
+#  ★ 3 次：给它「换方向 → 再换 → 再换」的机会，但不许无限绕
+#  ★ 有了这一档，熔断才能「只打断、不终止」—— 治的是「拿被拦当台阶下」的偷懒
+_KIND_GIVEUP_AFTER = 3
+
+
+def _action_kind(name: str, args: dict[str, Any]) -> str:
+    """这个动作属于哪一类"手法"？空串 = 认不出（不参与同类计数）。
+
+    ★ 只对 `shell_exec` 分类（别的工具没有"命令行"这个概念）✓
+    ★★ **侦察类命令一律不分类**（读文件 / 看目录 / 找东西）——
+      模型为了搞懂工具怎么用会反复读源码，那是**学习不是绕圈**。
+      真机事故（2026-10-14）：它读 render.mjs 源码 21 次，被旧正则归成「渲染帧」
+      ⇒ 熔断 ⇒ 任务停在 partial、连成片都没出 ✗
+    """
+    if name != "shell_exec":
+        return ""
+    try:
+        cmd = str((args or {}).get("command") or "")
+    except Exception:
+        return ""
+    if not cmd:
+        return ""
+    if _RECON_HEADS.match(cmd):
+        return ""            # ★ 侦察命令不计入同类绕圈 ✓
+    for kind, pat in _ACTION_KINDS:
+        try:
+            if pat.search(cmd):
+                return kind
+        except Exception:
+            continue
+    return ""
+
+
+def _kind_thresholds(max_iterations: int) -> tuple[int, int]:
+    """同类动作的 (warn, trip)。
+
+    ★ **刻意不随预算膨胀**：真机实测预算 360 步时基线阈值涨到 60+，
+    而它在同一件事上绕了 88 次 ⇒ 护栏等于没有 ✗
+    同类绕圈是"方法层面卡住"，跟预算大小无关，所以给固定值 ✓
+    """
+    return _KIND_WARN_AT, _KIND_TRIP_AT
+
+
+def _kind_trip_message(kind: str, hit: int, prev_error: str | None = None,
+                       missing: list[str] | None = None) -> str:
+    """同类绕圈的熔断提示 —— **要指方向**，不是只说「别重复」。
+
+    ★★ 2026-10-14（用户两条硬要求：① 不许老是重复 ② **不许偷懒**）
+
+    真机教训两连击：
+
+      ① 它在同一个问题上收到 6 次「重复提醒」仍在继续（因为没有**替代动作**可做）✗
+      ② 等到护栏真的熔断了，它**就此收工** —— 成片交了、5 个文档没做、状态 partial
+         ⇒ **这就是偷懒**：活没干完，拿「被拦」当台阶下 ✗
+
+    ⇒ 这条提示必须**同时**做到两件事：
+      · 给出「换个办法」的具体方向（治 ①）
+      · 明确说「**接着做，别停**」，并附上还没做完的交付清单（治 ②）
+    """
+    lines = [
+        f"（系统提醒）「{kind}」这一类动作你已经试了 **{hit} 次**，问题没解决。",
+        "**别再换参数重试了** —— 换个方向：",
+    ]
+    if kind in ("试字体/量字体", "画一帧看效果"):
+        lines += [
+            "  · 如果某个**字符**显示成方框 ⇒ **换掉那个字符**（用 → · — | ✓ 这类安全字符），",
+            "    或者干脆删掉它 —— ⛔ 不要去找/换字体（真机实测：88 次没找到）",
+            "  · 如果**整段中文**都是方框 ⇒ 那才是字体没选对 ⇒ 改用 C:/Windows/Fonts/msyhbd.ttc",
+        ]
+    elif kind == "媒体转码抽帧":
+        lines += [
+            "  · 换个命令形态（例如先用一条 `ffprobe` 确认输入真的存在、格式对）",
+            "  · 或把大命令拆成两步，先确认第一步的输出",
+        ]
+    else:
+        lines += [
+            "  · 换一种做法（改命令形态 / 拆成两步 / 先查清为什么没成功）",
+        ]
+    lines += [
+        "★ **任务还没结束，接着做** —— 这一条只是让你别再钻这个牛角尖，",
+        "  **不是让你收工的信号** ✗ 换条路把活干完 ✓",
+    ]
+    if missing:
+        lines.append("**还差这些交付物没做**（照着做完，别停）：")
+        lines += [f"  · {m}" for m in missing[:10]]
+    if prev_error:
+        lines.append(f"  上一次的输出（供判断）：{str(prev_error)[:200]}")
+    return "\n".join(lines)
+
+
+def _kind_warn_message(kind: str, hit: int, missing: list[str] | None = None) -> str:
+    """同类绕圈的提醒（还不到熔断）—— 同样要指方向，**并且不许停**。"""
+    lines = [
+        f"（系统提醒）「{kind}」这一类动作你已经试了 {hit} 次，还没解决。",
+        "别只换参数重试 —— 换个办法，或者先查清为什么一直不成。",
+        "★ 这只是让你换个方法，**任务没结束，接着做** ✓",
+    ]
+    if missing:
+        lines.append("还差这些交付物：" + "、".join(missing[:8]))
+    return "\n".join(lines)
+
+
+def _kind_giveup_message(kind: str, trips: int, missing: list[str] | None = None) -> str:
+    """**真的要停**时的收尾说明 —— 必须如实说清"卡在哪、为什么没做完"。
+
+    ★ 只有同一类动作**反复熔断**（打断后换条路又绕回来）才走到这里。
+      默默收工是不行的：用户得知道为什么没做完、下次该改什么 ✓
+    """
+    lines = [
+        f"（系统提醒）「{kind}」这一类动作已经**反复熔断 {trips} 次**，",
+        "换过办法仍然绕回同一个问题 ⇒ **这次真的停在这里**。",
+        "",
+        "**为什么没做完（交付时要如实汇报）**：",
+        f"  · 卡点：{kind} 这一步反复失败，换方向后仍绕回",
+    ]
+    if missing:
+        lines.append("  · 没做完的交付物：" + "、".join(missing[:10]))
+    lines += [
+        "",
+        "⇒ 交付时 `task_done` 的 **outcome 填 `partial`**，",
+        "  并在消息里写清上面这两条（卡在哪 / 缺什么）—— **不要假装做完了** ✗",
+    ]
+    return "\n".join(lines)
+
+
+def _deliverables_incomplete(task_input: str, missing: list[str] | None = None) -> bool:
+    """任务书里点名要的交付物，还有没有没做的？
+
+    判据：从**任务输入**里抠形如 `out/xxx.mp4`、`data/xxx.json` 的路径，
+    看它们是不是都落盘了。
+
+    ★ 为什么必须看交付清单：真机熔断时它只出了成片，
+      4 个文案 + 验收报告**一个都没做**就收工了 ⇒ 那是偷懒 ✗
+    ★ 抠不出任何路径 ⇒ 返回 False（fail-open：判不了就别拦着人家收工）✓
+    """
+    try:
+        found = re.findall(r"(?<![\w/])(out|data|renders|assets)/[\w\u4e00-\u9fff./-]+\.\w{2,5}",
+                           str(task_input or ""))
+    except Exception:
+        return False
+    if not found:
+        return False
+    if missing is None:
+        return True          # 有清单但没给"还缺什么" ⇒ 保守判"还没完"
+    return bool(missing)
+
+
+def _bump_kind_count(counts: dict[str, int], kind: str) -> int:
+    """同类动作计数 —— **换了一类就把上一类清零**。
+
+    ★ 为什么必须清零：换了另一类动作 = **真有进展**。
+      不清零的话，后面再回到原来那一类时，旧计数还在 ⇒ 一动手就被误熔断 ✗
+    ★ 空类别（认不出的动作）不动任何计数、返回 0 ✓
+    """
+    if not kind:
+        return 0
+    for k in list(counts):
+        if k != kind:
+            counts[k] = 0
+    counts[kind] = counts.get(kind, 0) + 1
+    return counts[kind]
+
+
 def _repeat_verdict(count: int) -> str:
     """重复动作的判定：`ok` / `warn`（提醒并跳过这次调用）/ `trip`（熔断收工）。
 
@@ -668,6 +897,16 @@ class TaskRun:
         #   一样 ⇒ 纯浪费（阈值提前一档，所有端点适用）；在变 ⇒ 算有进展（不动）✓
         self._action_outputs: dict[str, str] = {}
         self._last_output_repeated: bool = False
+        # ★ 2026-10-14：同类动作计数（_action_kind 归类）—— 治换参数重试型绕圈
+        self._kind_counts: dict[str, int] = {}
+        # ★ 同一类动作反复熔断的计数（到 _KIND_GIVEUP_AFTER 才真停）
+        self._kind_giveups: dict[str, int] = {}
+        # ★★ 2026-10-14：**"有没有动手"** 的两个计数（治"光研究不动手"）
+        #   · `_artifact_writes`：本任务写过的产物文件数（file_write 成功一次 +1）
+        #   · `_no_work_blocks`：交付时因"没动手"被拦的次数（最多拦 2 次，别把交付堵死）
+        #   真机证据：出过片的任务写文件 15~47 次；两条失败的任务写 **0** 次 ✗
+        self._artifact_writes: int = 0
+        self._no_work_blocks: int = 0
         # ★★ 这个 provider 是不是**本机推理服务**（llama.cpp / ollama / LM Studio 这类小模型）。
         #   用于给本地模型**单独收紧**重复阈值 —— 云端 API 行为一个字不动 ✓
         #   （用户硬约束：「针对 27B 这种本地部署模型必须优化」+「别的 API 别降级」）
@@ -1077,7 +1316,36 @@ class TaskRun:
             if err := self._validate(name, args):
                 result = ExecResult(False, f"参数校验失败：{err}", 0)
             elif name == "task_done":
-                gate_blocks = self._should_block_delivery()
+                # ★★ 2026-10-14：**一步活没干，不许交付**（治"光研究不动手"）
+                #
+                #   真机事故（task_20261014_a871e642，MiMo）：**183 步 / 52 分钟 / file_write = 0**
+                #   ⇒ 全程 96 次读文件 + 53 次跑只读脚本，**一个产物文件都没写过**
+                #   ⇒ 最后被护栏拦下时，它手上一无所有 ✗
+                #   另一条（592d89b3，本地 27B）更极端：**720 步 / 写文件 0** ✗
+                #
+                #   对照**出过片**的任务：写文件 15 / 20 / 21 / 25 / 26 / 47 次 ✓
+                #   ⇒ **"写文件次数"是提前看出成败的唯一硬信号** ✓
+                #
+                #   为什么不能只靠"没出成片不许 task_done"（那条已有）：
+                #     那条只在**交付时**拦。而这里要治的是**根本不动手** ——
+                #     它在交付前就把步数烧光了，根本走不到交付那一步 ✗
+                #   ⇒ 交付时补一道：**没写过任何产物 ⇒ 打回去继续做** ✓
+                _blocked_by_no_work = False
+                if self._no_work_done() and self._no_work_blocks < 2:
+                    self._no_work_blocks += 1
+                    _blocked_by_no_work = True
+                    result = ExecResult(
+                        False,
+                        "交付被拦（没动手门）：你还没写过**任何产物文件**（file_write = 0），"
+                        "一直在读文件 / 跑只读命令。\n"
+                        "  · 画面别从零写 —— **起手模板在 `tools/render/starter.html`**："
+                        "`cp tools/render/starter.html index.html`，然后改里面的文字和数字 ✓\n"
+                        "  · 别再读渲染器源码了（契约已写在模板的注释里）\n"
+                        "  · 直接开始写：分镜 → 画面 → 渲染 → 混音 ✓\n"
+                        "  （再交两次还是没动手，就放你交付 —— 但那种情况只能标 partial）",
+                        0,
+                    )
+                gate_blocks = (not _blocked_by_no_work) and self._should_block_delivery()
                 if gate_blocks:
                     self._delivery_gate_fired = True
                     self._delivery_gate_blocks += 1
@@ -1284,17 +1552,70 @@ class TaskRun:
                     )
                     verdict_kind = _repeat_verdict_for(hit, _warn_at, _trip_at)
 
+                    # ★★ 2026-10-14：**同类动作**的绕圈检测（真机烧掉 60% 步数那次）
+                    #   `_action_signature` 只认"命令完全相同"；而真机的 88 次试字体
+                    #   **每次命令行都不一样**（换字体名/换字号）⇒ 签名判据一次都没响 ✗
+                    #   `_action_kind` 把这类"手法相同、参数在换"的归成一类，单独计数 ✓
+                    #   ★ 判据刻意窄：认不出的返回空串 ⇒ 不参与（fail-open，不误伤）✓
+                    _kind_now = _action_kind(name, args)
+                    kind_hit = 0
+                    if _kind_now:
+                        kind_hit = _bump_kind_count(self._kind_counts, _kind_now)
+                        _kw, _kt = _kind_thresholds(self.max_iterations)
+                        _kverdict = _repeat_verdict_for(kind_hit, _kw, _kt)
+                        # 同类熔断**优先级更高**（方法层面卡死，比"命令写重了"严重）
+                        if _kverdict == "trip":
+                            verdict_kind = "trip"
+                        elif _kverdict == "warn" and verdict_kind == "ok":
+                            verdict_kind = "warn"
+
+
+                # ★★ 2026-10-14（用户两条硬要求：① 不许老是重复 ② **不许偷懒**）
+                #   熔断**只打断、不终止** —— 先把还没做的交付物查出来，
+                #   提示里带上它，让它换条路**接着做** ✗→✓
+                #   真机教训：老行为是熔断即 return，结果它交出成片、5 个文档没做就当交差，
+                #   那正是"拿被拦当台阶下"的偷懒 ✗
+                _missing_now: list[str] = []
+                try:
+                    for _f in re.findall(
+                            r"(?<![\w/])(?:out|data|renders|assets)/[\w\u4e00-\u9fff./-]+\.\w{2,5}",
+                            str(getattr(self, "task_input", "") or "")):
+                        if self.workspace_path and not (self.workspace_path / _f).exists():
+                            _missing_now.append(_f)
+                except Exception:
+                    _missing_now = []
 
                 if verdict_kind == "trip":
+                    if kind_hit and kind_hit >= _KIND_TRIP_AT:
+                        # ★ 同一类动作**反复熔断**（打断后换条路又绕回来）⇒ 才真的停
+                        self._kind_giveups[_kind_now] = self._kind_giveups.get(_kind_now, 0) + 1
+                        _trips = self._kind_giveups[_kind_now]
+                        if _trips >= _KIND_GIVEUP_AFTER:
+                            detail = _kind_giveup_message(_kind_now, _trips, _missing_now)
+                            self.emit("error", {"message": detail, "code": "kind_giveup"})
+                            self.set_status("partial")
+                            self.emit("status",
+                                      {"state": "partial",
+                                       "detail": f"「{_kind_now}」反复绕圈 {_trips} 次，如实停下"})
+                            return
+                        detail = _kind_trip_message(_kind_now, kind_hit, prev_error,
+                                                    missing=_missing_now)
+                        self.emit("observation", {"call_id": call_id, "ok": False,
+                                                  "result": detail})
+                        continue          # ★ 打断这一轮，**任务继续** ✓
+                    # 精确重复那条仍然按老语义：命令一字不差重复到上限 ⇒ 收工（那是纯浪费）
                     detail = _repeat_trip_message(name, hit, prev_error)
                     self.emit("error", {"message": detail, "code": "step_repetition"})
-                    # 已产出的东西照常交付：置 partial（不是 failed）——群里能看到交付、验收照跑，
-                    # 这才是诚实的"做了一部分"
                     self.set_status("partial")
-                    self.emit("status", {"state": "partial", "detail": "检测到重复动作，提前收工"})
+                    self.emit("status",
+                              {"state": "partial", "detail": "检测到重复动作，提前收工"})
                     return
                 if verdict_kind == "warn":
-                    result = ExecResult(False, _repeat_warn_message(name, hit, prev_error), 0)
+                    if kind_hit and kind_hit >= _KIND_WARN_AT:
+                        _warn_text = _kind_warn_message(_kind_now, kind_hit, missing=_missing_now)
+                    else:
+                        _warn_text = _repeat_warn_message(name, hit, prev_error)
+                    result = ExecResult(False, _warn_text, 0)
                     # ★ 这里**故意不写 `_action_errors`**：提醒不是工具报错。
                     #   写进去会让下一条提醒引用上一条提醒 ⇒ 套娃（真报错被挤掉）。
                     self.emit("observation", {"call_id": call_id, "ok": False,
@@ -1314,6 +1635,8 @@ class TaskRun:
             # 交付纪律门：记录代码文件写入与验证行为
             # 审计 §8.3：code_check 输出 ✗（语法错误）不算"已校验"；shell_exec
             # 非零退出码（_shell 在尾部标注（退出码 N）/（exit N））不算"真跑过"。
+            if name == "file_write" and result.ok:
+                self._artifact_writes += 1
             if result.ok and name == "code_check":
                 # 复审修正：必须以 ✓ 开头才算真通过——"（无内置校验器）/（未找到 node）"
                 # 这类跳过分支不含 ✗，旧判定会把"没校验"记成"已校验"
@@ -2009,6 +2332,23 @@ class TaskRun:
         # 【恢复不了模型被篡改的路径记忆】。落盘/外发的 arguments 面仍走
         # _redact_deep → redact_text 强规则。
         return redact_text_tool(text)
+
+    def _no_work_done(self) -> bool:
+        """★ 一步活没干？—— 判据：**写过 0 个产物文件**，且任务书里点名要文件。
+
+        真机事故（2026-10-14）：两条任务分别是 **183 步 / 写文件 0** 与 **720 步 / 写文件 0** ✗
+        而**出过片**的任务写文件 **15~47** 次 ✓
+        ⇒ 「写文件次数」是提前看出成败的唯一硬信号 ✓
+        """
+        if self._artifact_writes > 0:
+            return False
+        # 任务书里点了交付文件名（out/xxx、data/xxx 这类）才算该写文件的任务
+        try:
+            return bool(re.search(
+                r"(?:out|data|renders|assets)/[\w\u4e00-\u9fff./-]+\.\w{2,5}",
+                str(getattr(self, "task_input", "") or "")))
+        except Exception:
+            return False
 
     def _should_block_delivery(self) -> bool:
         """交付纪律门：写了代码文件但零验证 → 拦，直到有验证记录。

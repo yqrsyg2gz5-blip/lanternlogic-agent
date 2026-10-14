@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>卡点视频 · 起手模板（照这个改，别从零写）</title>
+<!--
+  ============================================================================
+  起手模板 —— **照这个改，不要从零写**（2026-10-14 新增）
+
+  为什么有它：真机实测（task_20261014_a871e642）模型为了搞懂渲染器，
+  反复读 render.mjs 源码 **21 次**，最后被护栏熔断、连成片都没出 ✗
+  ⇒ 这个文件把「契约 + 版式 + 常用动效」全写好了，**改数字和文字就行** ✓
+
+  契约（缺一个就 `waitForFunction: Timeout` 直接失败）：
+    window.__meta  = { W, H, FPS, DURATION }   画布尺寸 / 帧率 / 总时长（秒）
+    window.__draw  = (t) => {...}              按「第 t 秒」画一帧（纯函数，别依赖真实时钟）
+    window.__ready = true                      就绪后置位
+
+  ★ 已内建的东西（直接用，别重造）：
+    · 深色底 + 单主色 + 发光/暗角/细网格  —— 统一视觉语言
+    · 缓动函数 easeOutCubic / easeInOutCubic —— 动效顺滑的关键（线性会很难看）
+    · 逐词蹦字（关键词染色 + 发光）
+    · 大数字滚动
+    · 横向对比条（带数值标签）
+    · 透视假 UI 墙（制造"多"和"深"）
+    · 底部拍点进度条（卡点看得见）
+
+  ★ 三条硬规矩（踩过的坑）：
+    1. **字体**：canvas 里下中文字体用 `"Microsoft YaHei", sans-serif`；
+       本机一定有的中文字体文件是 C:/Windows/Fonts/msyhbd.ttc（要 fontface 时用）
+    2. **字符**：画面里出现方框 ⇒ **换掉那个字符**（用 → · — | ✓ ★ ● ○ ▲ ▼），
+       ⛔ 绝对不许去找字体（实测 88 次没找到）
+    3. **时间**：`__draw(t)` 里**不许**用 Date.now() / requestAnimationFrame 计时 ——
+       渲染器会给固定 t，用真实时钟会导致每帧画得不一样
+
+  跑法（技能目录下，git bash）：
+    export PATH="/d/MiniMax Design/current/resources/ffmpeg:$PATH"
+    export CHROME_PATH="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+    node tools/render/render.mjs mypage.html out.mp4 --workers 2
+
+  ★ 改法：① 改 DURATION ② 改 SCENES 里的文字/数值 ③ 删掉用不上的动效函数
+  ============================================================================
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0e14; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage" width="1080" height="1920"></canvas>
+<script>
+/* ══════════════════ 契约第 1 件：尺寸与时长 ══════════════════ */
+const W = 1080, H = 1920, FPS = 30;
+const DURATION = 20.0;            // ★ 改这里换时长（记得同步改场景表）
+const BEAT = 0.5;                 // 120 BPM ⇒ 每 0.5 秒一拍
+
+const cv = document.getElementById('stage');
+const g = cv.getContext('2d');
+
+/* ══════════════════ 视觉规范（统一语言，别每个场景换一套）══════════════════ */
+const C = {
+  bg0: '#0a0e14', bg1: '#111823',
+  fg:  '#f2f6fb',           // 主文字
+  dim: '#8a97a8',           // 次要文字
+  acc: '#5b8cff',           // 主色（蓝紫）—— 全片只用这一个强调色
+  ok:  '#3ddc97',           // 正向数据（绿）
+  bad: '#ff5a5a',           // 负向数据（红）
+  card:'#151d2a', line:'#243247',
+};
+const FONT = '"Microsoft YaHei", "Segoe UI", sans-serif';
+const MONO = 'Consolas, "Cascadia Mono", monospace';
+
+/* ══════════════════ 缓动（**动效顺滑的关键**，别用线性）══════════════════ */
+const out  = t => 1 - Math.pow(1 - t, 3);                          // easeOutCubic
+const inout= t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;    // easeInOutCubic
+const cl   = (v,a,b) => Math.max(a, Math.min(b, v));
+const seg  = (t, start, dur) => cl((t - start) / dur, 0, 1);       // sub-animation progress
+
+/* ══════════════════ 底座：背景 + 网格 + 暗角（每帧都调）══════════════════ */
+function bg(t, accent) {
+  const gr = g.createLinearGradient(0, 0, 0, H);
+  gr.addColorStop(0, C.bg1); gr.addColorStop(1, C.bg0);
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  // 主色光晕（缓慢呼吸，制造纵深）
+  const b = .5 + .5 * Math.sin(t * .9);
+  const rg = g.createRadialGradient(W*.72, H*.28, 0, W*.72, H*.28, 1000);
+  rg.addColorStop(0, hexA(accent, .14 + .06*b)); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = rg; g.fillRect(0, 0, W, H);
+  // 细网格（技术感底纹）
+  g.save(); g.globalAlpha = .045; g.strokeStyle = '#5d7ea8'; g.lineWidth = 1;
+  const off = (t * 20) % 80;
+  for (let y = -80 + off; y < H; y += 80) { g.beginPath(); g.moveTo(0,y); g.lineTo(W,y); g.stroke(); }
+  for (let x = 0; x < W; x += 80)      { g.beginPath(); g.moveTo(x,0); g.lineTo(x,H); g.stroke(); }
+  g.restore();
+}
+function vignette() {
+  const rg = g.createRadialGradient(W/2, H/2, H*.28, W/2, H/2, H*.74);
+  rg.addColorStop(0, 'rgba(0,0,0,0)'); rg.addColorStop(1, 'rgba(0,0,0,.72)');
+  g.fillStyle = rg; g.fillRect(0, 0, W, H);
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;
+}
+
+/* ══════════════════ 版式零件 ══════════════════ */
+
+/* 左上角：编号 + 眉标 + 竖线（让画面"像一页"而不是"一行字"）*/
+function eyebrow(no, label, accent, alpha) {
+  if (alpha <= 0) return;
+  g.save(); g.globalAlpha = alpha;
+  g.fillStyle = accent; g.fillRect(90, 128, 8, 74);
+  g.font = `700 40px ${MONO}`; g.fillStyle = accent; g.textAlign = 'left';
+  g.textBaseline = 'middle';
+  g.fillText(String(no).padStart(2, '0'), 122, 152);
+  g.font = `600 46px ${FONT}`; g.fillStyle = C.dim;
+  g.fillText(label, 122, 200);
+  g.restore();
+}
+
+/* ★ 逐词蹦字：关键词染色 + 发光（最出效果的一招）*/
+function words(list, x, y, size, start, gap, t, align = 'left') {
+  g.textBaseline = 'middle';
+  const wid = list.map(w => { g.font = `800 ${size}px ${FONT}`; return g.measureText(w.s).width; });
+  const total = wid.reduce((a, b) => a + b, 0);
+  let cx = align === 'center' ? x - total/2 : x;
+  list.forEach((w, i) => {
+    const p = seg(t, start + i*gap, .42);
+    if (p > 0) {
+      const e = out(p);
+      g.save(); g.globalAlpha = e;
+      g.translate(cx, y + (1-e)*34);
+      g.font = `800 ${size}px ${FONT}`;
+      g.fillStyle = w.c || C.fg;
+      if (w.c && w.c !== C.fg) { g.shadowColor = w.c; g.shadowBlur = 26*e; }
+      g.textAlign = 'left'; g.fillText(w.s, 0, 0);
+      g.restore();
+    }
+    cx += wid[i];
+  });
+  g.textAlign = 'left';
+}
+
+/* ★ 大数字滚动 */
+function roll(to, x, y, size, start, t, suffix = '') {
+  const p = seg(t, start, .9); if (p <= 0) return;
+  const v = Math.floor(to * out(p));
+  g.save();
+  g.font = `800 ${size}px ${FONT}`; g.fillStyle = C.fg; g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.shadowColor = 'rgba(255,255,255,.3)'; g.shadowBlur = 30*p;
+  g.fillText(v.toLocaleString('en-US') + suffix, x, y);
+  g.restore(); g.textAlign = 'left';
+}
+
+/* ★ 横向对比条（带左侧标签 + 右侧数值）—— 数据类画面最常用 */
+function bars(rows, x, y, width, rowH, start, t) {
+  const max = Math.max(...rows.map(r => r.v));
+  rows.forEach((r, i) => {
+    const p = seg(t, start + i*.16, .7); if (p <= 0) return;
+    const yy = y + i*rowH;
+    g.save(); g.globalAlpha = out(p);
+    g.font = `600 44px ${FONT}`; g.fillStyle = C.dim; g.textBaseline = 'middle';
+    g.textAlign = 'left'; g.fillText(r.label, x, yy);
+    const bx = x + 190, bw = width - 190 - 150;
+    g.fillStyle = C.card; roundRect(bx, yy-22, bw, 44, 10); g.fill();
+    g.fillStyle = r.c || C.acc;
+    roundRect(bx, yy-22, Math.max(10, bw * r.v / max * out(p)), 44, 10); g.fill();
+    g.fillStyle = r.c || C.acc; g.font = `800 46px ${MONO}`; g.textAlign = 'right';
+    g.fillText(String(r.v), x + width, yy);
+    g.restore();
+  });
+  g.textAlign = 'left';
+}
+
+/* ★ 透视假 UI 墙（一屏塞满"卡片"，制造密度与纵深）*/
+function uiWall(t, cols, rows, yBase, alpha) {
+  g.save();
+  g.translate(W/2, yBase); g.transform(1, 0, -.42, .86, 0, 0);
+  const cw = 176, ch = 104, gx = 16, gy = 13;
+  const ox = -(cols*(cw+gx))/2, oy = -(rows*(ch+gy))/2;
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const k = j*cols + i;
+    g.save();
+    g.globalAlpha = alpha * (.32 + .68*(((k*37)%11)/11)) * (.85 + .15*Math.sin(t*2.2 + k));
+    const x = ox + i*(cw+gx), y = oy + j*(ch+gy);
+    g.fillStyle = '#0f151f'; g.strokeStyle = C.line; g.lineWidth = 1.2;
+    roundRect(x, y, cw, ch, 9); g.fill(); g.stroke();
+    g.fillStyle = '#39506e'; g.beginPath(); g.arc(x+18, y+20, 7, 0, 7); g.fill();
+    for (let r = 0; r < 4; r++) {
+      g.fillStyle = r === 0 ? '#4d637f' : '#2b3a4f';
+      g.fillRect(x+32, y+15+r*17, [cw-46, cw-72, cw-58, cw-88][r] * (.72 + .28*(((k+r*5)%7)/7)), r === 0 ? 7 : 5);
+    }
+    if (k % 3 === 0) { g.fillStyle = C.ok;  g.fillRect(x+cw-40, y+ch-20, 30, 5); }
+    if (k % 5 === 0) { g.fillStyle = C.bad; g.fillRect(x+cw-40, y+ch-12, 22, 4); }
+    g.restore();
+  }
+  g.restore();
+}
+
+/* ★ 底部：时间码 + 拍点进度条（卡点看得见）*/
+function hud(t, accent) {
+  const beat = Math.floor(t / BEAT);
+  g.save();
+  g.font = `600 36px ${MONO}`; g.fillStyle = C.dim; g.textAlign = 'left';
+  g.textBaseline = 'middle'; g.fillText(`${t.toFixed(1)}s`, 90, H-108);
+  g.textAlign = 'right'; g.fillText(`第 ${beat} 拍`, W-90, H-108);
+  g.restore();
+  g.fillStyle = 'rgba(255,255,255,.08)'; g.fillRect(90, H-76, W-180, 5);
+  g.fillStyle = accent;
+  g.fillRect(90, H-76, (W-180) * (1 - (t % BEAT) / BEAT), 5);
+  g.textAlign = 'left';
+}
+
+function roundRect(x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x+r, y); g.arcTo(x+w, y, x+w, y+h, r); g.arcTo(x+w, y+h, x, y+h, r);
+  g.arcTo(x, y+h, x, y, r); g.arcTo(x, y, x+w, y, r); g.closePath();
+}
+
+/* ══════════════════ ★ 场景表（改这里换内容）══════════════════
+   ⚠️ 三个硬约束：
+     1. 每段长度 = 0.5 秒的整数倍（切点才落在拍上）
+     2. 段首尾相接（上一段结束 = 下一段开始）
+     3. 语音一栏一句话必须 ≤ 音色在 3 秒内能念完的字数（中文约 4 字/秒 ⇒ ≤12 字）
+*/
+const SCENES = [
+  { a: 0.0,  b: 3.5,  no: 1, tag: 'OUTPUT LIMIT', acc: C.acc,
+    big: [{s:'输出上限', c:C.fg}, {s:'100 万', c:C.acc}],
+    render: (t, L) => { roll(1000000, W/2, H*0.40, 150, .4, t); } },
+  { a: 3.5,  b: 7.0,  no: 2, tag: 'BENCHMARK',    acc: C.acc,
+    big: [{s:'68.9%', c:C.acc}, {s:'登顶', c:C.fg}],
+    render: (t, L) => { bars([
+      { label: 'Argon',  v: 68.9, c: C.acc },
+      { label: 'Sonnet', v: 67.0, c: '#7aa2ff' },
+      { label: 'Opus',   v: 66.9, c: '#9db8ff' },
+    ], 120, H*0.52, W-240, 110, 3.7, t); } },
+  { a: 7.0,  b: 10.5, no: 3, tag: 'INTERNAL',     acc: C.ok,
+    big: [{s:'提交', c:C.fg}, {s:'+35%', c:C.ok}],
+    render: (t, L) => { bars([
+      { label: '提交', v: 35, c: C.ok },
+      { label: '回滚', v: 33, c: C.bad },
+    ], 120, H*0.52, W-240, 120, 7.2, t); } },
+  { a: 10.5, b: 14.0, no: 4, tag: 'ROBOT',        acc: C.acc,
+    big: [{s:'连中', c:C.fg}, {s:'7 球', c:C.acc}],
+    render: (t, L) => { uiWall(t, 5, 3, H*0.80, .40); } },
+  { a: 14.0, b: 20.0, no: 5, tag: 'SAFETY',       acc: C.ok,
+    big: [{s:'走捷径', c:C.fg}, {s:'2%', c:C.ok}],
+    render: (t, L) => { bars([
+      { label: '违规捷径', v: 2,  c: C.bad },
+      { label: '注入攻击', v: .7, c: C.ok },
+    ], 120, H*0.52, W-240, 120, 14.3, t); } },
+];
+
+function sceneAt(t) {
+  for (const s of SCENES) if (t >= s.a && t < s.b) return s;
+  return SCENES[SCENES.length - 1];
+}
+
+/* ══════════════════ 契约第 2 件：__draw(t) ══════════════════ */
+function draw(t) {
+  const sc = sceneAt(t);
+  const L = t - sc.a;                     // 场景内本地时间
+
+  bg(t, sc.acc);
+  eyebrow(sc.no, sc.tag, sc.acc, out(seg(t, sc.a + .1, .4)));
+  words(sc.big, W/2, H*0.26, 132, sc.a + .35, .28, t, 'center');
+  sc.render(t, L);
+  hud(t, sc.acc);
+  vignette();
+}
+
+/* ══════════════════ 契约第 3 件：__meta / __ready ══════════════════ */
+window.__meta = { W, H, FPS, DURATION };
+window.__draw = draw;
+draw(0);
+window.__ready = true;
+</script>
+</body>
+</html>

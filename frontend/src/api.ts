@@ -313,6 +313,9 @@ export interface AgentApi {
    *  ★ verifyKey=true（2026-10-10）：保存前**先拿这把 Key 打一次该服务商** ——
    *    服务商明确拒收（401/403）就**拒绝保存**并回人话（网络不通不算，照常保存） */
   setModel(provider: string, modelName: string, baseUrl: string | null, apiKey: string | null, apiKeyEnv: string | null, persist?: boolean, verifyKey?: boolean): Promise<{ ok: boolean; persisted?: boolean; key_env?: string; note?: string }>;
+  /** ★★ 2026-10-14：设**思考档位**（空=默认 / off / low / medium / high）——
+   *  后端按模型能力校验，不支持的档位会被 422 拒掉 ✓ */
+  setThinking(reasoningEffort: string): Promise<{ ok: boolean; reasoning_effort: string; label: string }>;
   /** ★ 2026-10-06：自动查单价（查 OpenRouter 公开表；服务商 API 本身不给价） */
   fetchPricing(p: { model?: string; fx?: number }): Promise<{
     found: boolean; model?: string; matched?: string; fx?: number;
@@ -1163,6 +1166,17 @@ export class HttpApi implements AgentApi {
     });
   }
 
+  /** ★★ 2026-10-14（用户要求）：设**思考档位** —— 不动模型，只动档位。
+   *  取值：`''` = 默认 / `off` = 关 / `low` / `medium` / `high`（后端按模型能力校验，
+   *  不支持的档位会被 422 拒掉 —— 界面只该显示这个模型真支持的档）。 */
+  async setThinking(reasoningEffort: string): Promise<{ ok: boolean; reasoning_effort: string; label: string }> {
+    return request<{ ok: boolean; reasoning_effort: string; label: string }>('/settings/thinking', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reasoning_effort: reasoningEffort }),
+    });
+  }
+
 
   async listSkills(): Promise<Skill[]> {
     return request<Skill[]>('/skills');
@@ -1560,6 +1574,13 @@ export class MockApi implements AgentApi {
     return { provider: '', models: [], source: 'preset', note: '离线演示模式：用内置预设' };
   }
   /** 离线演示：给一份静态能力表，界面照常渲染 */
+  /** ★ 2026-10-14：Mock 版思考档位（内存里存一下，供界面测试用） */
+  async setThinking(reasoningEffort: string): Promise<{ ok: boolean; reasoning_effort: string; label: string }> {
+    (this as unknown as { _effort?: string })._effort = reasoningEffort;
+    const zh: Record<string, string> = { off: '关', low: '低', medium: '中', high: '高' };
+    return { ok: true, reasoning_effort: reasoningEffort, label: zh[reasoningEffort] ?? '默认' };
+  }
+
   async getCapabilities(): Promise<Awaited<ReturnType<AgentApi['getCapabilities']>>> {
     return {
       capabilities: {

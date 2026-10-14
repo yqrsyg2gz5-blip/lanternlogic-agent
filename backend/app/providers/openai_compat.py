@@ -73,6 +73,118 @@ def _estimate_tokens_messages(messages: list[dict[str, Any]]) -> int:
     return total
 
 
+    # ════════════════════════════════════════════════════════════════════════════
+# ★★ 思考档位（2026-10-14 用户要求：界面上给中文，各家翻译成自己认的值）
+#
+#   用户原话：「你把那个档位最好是用中文，别用英文……你可以关/低/中/高……
+#              假如说别的模型就两个档位，关中高……你就按人家模型建议来呗」
+#
+#   ★ 实测出来的各家能力（2026-10-14，实打实发请求试的，不是查文档猜的）：
+#       MiMo：    none ✓ / low ✓ / medium ✓ / high ✓  ｜ minimal ✗400 · max ✗400 · xhigh ✗400
+#       DeepSeek：low ✓ / high ✓ / max ✓              ｜ 官方表：minimal→low · medium→high
+#                                                       xhigh→high · ultra→max
+#       本地：    只有 开/关（chat_template_kwargs.enable_thinking）
+#       OpenAI/阿里/智谱：**没这个参数** ⇒ 一个字段都不许塞（严格网关会 400）✗
+# ════════════════════════════════════════════════════════════════════════════
+
+#: 统一口径（四个值）—— 界面文案是中文，存的就是这四个
+_EFFORT_LEVELS: dict[str, str] = {
+    "off": "关",
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+}
+
+#: 界面文案（★ 用户要求中文，不许只给英文）
+EFFORT_LABELS_ZH: dict[str, str] = dict(_EFFORT_LEVELS)
+
+#: 各家映射：统一口径 → 该服务商**实测认的**值
+#  ★ 只放实测通过的值。写没验过的值 = 上线就 400 ✗
+_EFFORT_MAP: dict[str, dict[str, str]] = {
+    "deepseek": {"off": "none", "low": "low", "medium": "high", "high": "max"},
+    "mimo": {"off": "none", "low": "low", "medium": "medium", "high": "high"},
+    # 本地没有档位概念：低/中/高都当"开"，off 当"关"
+    "local": {"off": "off", "low": "on", "medium": "on", "high": "on"},
+}
+
+#: 界面该显示哪几档（按模型能力给选项 —— 用户要的「按人家模型建议来」）
+_EFFORT_SUPPORT: dict[str, tuple[str, ...]] = {
+    "deepseek": ("off", "low", "medium", "high"),   # 关 / 低 / 中（=高）/ 最高（=max）
+    "mimo": ("off", "low", "medium", "high"),       # 关 / 低 / 中 / 高
+    "local": ("off", "high"),                          # 关 / 开
+}
+
+#: ★ 给界面用的中文文案（"最高"单独区分 DeepSeek 那档）
+EFFORT_LABELS_ZH_FULL: dict[str, str] = {
+    "off": "关", "low": "低", "medium": "中", "high": "高",
+}
+
+
+#: 本地推理服务的地址特征（模块级 —— supported_efforts() 与类内都要用）✓
+_LOCAL_URL_HINTS = ("127.0.0.1", "localhost", "0.0.0.0", "[::1]", "::1")
+
+def supported_efforts(base_url: str) -> list[str]:
+    """这个端点支持哪几档思考？—— **界面靠它决定显示哪几个按钮** ✓
+
+    ★ 用户要求「按人家模型建议来」⇒ 不支持档位的服务商返回空列表，
+      界面就**不显示那一栏**（不许硬塞字段 —— 严格网关会 400）✗
+    """
+    u = str(base_url or "").lower()
+    if any(h in u for h in _LOCAL_URL_HINTS):
+        return list(_EFFORT_SUPPORT["local"])
+    for kind, hints in _THINKING_CLOUD_HINTS:
+        if any(h in u for h in hints):
+            return list(_EFFORT_SUPPORT.get(kind, ()))
+    return []
+
+
+#: ★ 各家同一档位的**中文说法可能不同**（DeepSeek 的 high 实际是 max ⇒ 叫"最高"更准）
+_EFFORT_ZH_PER_KIND: dict[str, dict[str, str]] = {
+    "deepseek": {"off": "关", "low": "低", "medium": "中", "high": "最高"},
+    "mimo": {"off": "关", "low": "低", "medium": "中", "high": "高"},
+    "local": {"off": "关", "high": "开"},
+}
+
+
+def effort_labels_for(base_url: str) -> dict[str, str]:
+    """界面要显示的 {档位: 中文} —— **按这个端点实际支持的档**给 ✓
+
+    ★ 用户要求「按人家模型建议来」：不支持的不显示，不硬塞 ✗
+    """
+    levels = supported_efforts(base_url)
+    if not levels:
+        return {}
+    kind = _endpoint_kind(base_url)
+    table = _EFFORT_ZH_PER_KIND.get(kind, EFFORT_LABELS_ZH_FULL)
+    return {lv: table.get(lv, EFFORT_LABELS_ZH_FULL.get(lv, lv)) for lv in levels}
+
+
+def _endpoint_kind(base_url: str) -> str:
+    """这个端点是哪一类（local / deepseek / mimo / 空）—— 供档位映射与文案用 ✓"""
+    u = str(base_url or "").lower()
+    if any(h in u for h in _LOCAL_URL_HINTS):
+        return "local"
+    for k, hints in _THINKING_CLOUD_HINTS:
+        if any(h in u for h in hints):
+            return k
+    return ""
+
+
+def effort_label_zh(level: str) -> str:
+    """档位的**中文**文案（用户要求界面用中文）✓"""
+    return EFFORT_LABELS_ZH_FULL.get(str(level or "").strip().lower(), "")
+
+
+
+#: 有思考模式、且**默认开着**的云端服务商（按 base_url 认，不按模型名 ——
+#: 同一家会有多个模型名，而思考行为是**服务商/模板**层面的 ✓）
+_THINKING_CLOUD_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # (类别, URL 特征)
+    ("deepseek", ("api.deepseek.com", "deepseek.com")),
+    ("mimo", ("xiaomimimo.com", "mimo.mi.com", "xiaomi")),
+)
+
+
 class OpenAICompatProvider(ModelProvider):
     name = "openai_compatible"
     def __init__(self, model_cfg: Any) -> None:  # ModelCfg，避免循环导入
@@ -84,6 +196,11 @@ class OpenAICompatProvider(ModelProvider):
         self.api_key_env = str(model_cfg.api_key_env or "")
         self.temperature = model_cfg.temperature
         self.max_tokens = model_cfg.max_tokens
+        # ★★ 2026-10-14（用户要求）：**思考档位** —— 不存下来的话 `_build_body` 取不到，
+        #   档位就是死的（本班踩过：加了映射表却忘了在 __init__ 里接，
+        #   实测请求体里一个思考字段都没有 ✗）
+        #   取值："" = 不设（服务商默认）· off / low / medium / high
+        self.reasoning_effort = str(getattr(model_cfg, "reasoning_effort", "") or "").strip().lower()
         self.total_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "estimated": False}
         if not self.base_url:
             raise ValueError("model.base_url 未配置（OpenAI 兼容提供者必须提供）")
@@ -221,7 +338,7 @@ class OpenAICompatProvider(ModelProvider):
         return msgs
 
     #: 本地推理服务的常见地址特征 —— 用于判断"要不要关思考"
-    _LOCAL_HINTS = ("127.0.0.1", "localhost", "0.0.0.0", "[::1]", "::1")
+    _LOCAL_HINTS = _LOCAL_URL_HINTS
 
     def _is_local_endpoint(self) -> bool:
         """这个 base_url 是不是本机推理服务（llama.cpp / ollama / LM Studio 等）。"""
@@ -244,7 +361,31 @@ class OpenAICompatProvider(ModelProvider):
 
           ⇒ 对**本地**端点默认附带 `chat_template_kwargs.enable_thinking = False` ✓
           服务端不认这个字段时会忽略（Jinja 里就是 undefined）⇒ 安全 ✓
-          **云端不附**（它用不上，属于污染请求；见 tests）✓
+
+          ★★ 2026-10-14 修正：**云端也有"会想死自己"的**，不能再一律不附 ✗
+
+            实测（同一份长提示 = 「文章→卡点视频提示词」模板 + 一篇文章）：
+
+              模型 / 调法                          正文      用时    思考 token
+              ─────────────────────────────────────────────────────────────
+              DeepSeek 默认（思考开）             **0 字**   86 s    **16384（吃光）**
+              DeepSeek thinking=disabled          1648 字    6 s    无
+              DeepSeek reasoning_effort=none      1524 字    6 s    无
+              MiMo    默认（思考开）              3000 字    304 s   11662
+              MiMo    enable_thinking=False       2560 字    28 s    0
+
+            ⇒ **不关思考：要么一个字都出不来，要么慢 5–11 倍** ✗
+            ⇒ 关思考后 6 秒出完整结果（**快 14 倍**）✓
+            ⇒ 这也很可能解释那条 20 秒卡点视频为什么烧了 546 万 input token
+              （每轮都在"想"，想的东西不计入正文、只计费）
+
+            ⇒ 改法：知道"有思考模式且默认开着"的云端，**默认关掉**；
+              不认识的云端**一个字段都不加**（严格网关见陌生字段会 400）✓
+              显式 `enable_thinking=True` 时按各家机制**真的开** ✓
+
+            · DeepSeek 系 → `thinking = {"type": "disabled"}`（实测有效）
+            · MiMo 系     → `chat_template_kwargs.enable_thinking = False`（实测有效，
+                            与本地模板同一条机制）
         """
         body: dict[str, Any] = {
             "model": self.model_name,
@@ -253,10 +394,77 @@ class OpenAICompatProvider(ModelProvider):
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
+        # ★★ 2026-10-14 用户明确要求：**云端一律不许关思考** ✗
+        #
+        #   原话：「尤其那个思考你不能关，你关思考他就是个笨蛋」
+        #
+        #   我上一版曾对 DeepSeek / MiMo 默认关思考（理由写着"想死自己、慢"），
+        #   但那是**看错了病** ✗
+        #     · 真问题是 `max_tokens` 给小了（4096）⇒ 思考吃光预算 ⇒ 正文为空
+        #       ⇒ 该修的是**预算**，不是把思考关掉 ✗
+        #     · 实测同一份写代码任务：
+        #         开思考 → 输出 3950 tok / 正文 260 行
+        #         关思考 → 输出 1106 tok / 正文 102 行
+        #       ⇒ **关掉就是变笨**（用户一眼看出来了）✓
+        #     · agent 干长活靠的就是思考 —— 每步多推演几步才不会跑偏 ✓
+        #
+        #   ⇒ 现在的规矩（只有两条）：
+        #     · **本地端点**：默认附 `chat_template_kwargs.enable_thinking=False`
+        #       （2026-10-12 真机：本地模板默认开思考 ⇒ 绕圈吐空 3/5 ✗ 这条要留）✓
+        #     · **云端（含 DeepSeek / MiMo）**：**一个思考字段都不加** ⇒ 服务商默认行为 ✓
+        #       —— 只有调用方**显式**传 `enable_thinking=False` 才关 ✓
+        # ★★ 思考档位（2026-10-14 用户要求）—— 优先级：显式参数 > 配置里的档位 > 服务商默认
+        _effort = ""
+        if enable_thinking is None:
+            _effort = str(getattr(self, "reasoning_effort", "") or "").strip().lower()
+        _kind = _endpoint_kind(self.base_url)
+        if _effort and _kind:
+            _mapped = _EFFORT_MAP.get(_kind, {}).get(_effort)
+            if _mapped:
+                if _kind == "local":
+                    body["chat_template_kwargs"] = {
+                        "enable_thinking": (_mapped != "off")}
+                elif _mapped == "none":
+                    # 关思考：各家写法不同（DeepSeek 用 thinking，MiMo 用模板开关）
+                    if _kind == "deepseek":
+                        body["thinking"] = {"type": "disabled"}
+                    else:
+                        body["chat_template_kwargs"] = {"enable_thinking": False}
+                else:
+                    body["reasoning_effort"] = _mapped
+                    if _kind == "deepseek":
+                        body["thinking"] = {"type": "enabled"}
+                return body
         want = (not self._is_local_endpoint()) if enable_thinking is None else bool(enable_thinking)
         if self._is_local_endpoint():
             body["chat_template_kwargs"] = {"enable_thinking": bool(want)}
+        elif enable_thinking is not None:
+            # 云端：**只有调用方显式要求**时才动思考开关，否则保持服务商默认 ✓
+            if self._is_deepseek_endpoint():
+                body["thinking"] = {"type": "enabled" if want else "disabled"}
+            elif self._is_mimo_endpoint():
+                body["chat_template_kwargs"] = {"enable_thinking": want}
         return body
+
+
+    def _thinking_cloud_kind(self) -> str:
+        """这个端点属于哪一类"会想死自己"的云端？空串 = 不认识（啥都别加）。"""
+        try:
+            u = str(self.base_url or "").lower()
+        except Exception:
+            return ""
+        if self._is_local_endpoint():
+            return ""            # 本地走另一条路（chat_template_kwargs）✓
+        for kind, hints in _THINKING_CLOUD_HINTS:
+            if any(h in u for h in hints):
+                return kind
+        return ""
+
+    def _is_deepseek_endpoint(self) -> bool:
+        return self._thinking_cloud_kind() == "deepseek"
+
+    def _is_mimo_endpoint(self) -> bool:
+        return self._thinking_cloud_kind() == "mimo"
 
     async def next_turn(
         self,

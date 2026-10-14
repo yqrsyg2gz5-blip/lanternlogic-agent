@@ -58,7 +58,27 @@ const workersArg = opt('--workers', 'auto');
 const [input, out = 'out.mp4'] = args;
 if (!input || !['png', 'jpeg'].includes(format)) { console.error(HELP); process.exit(1); }
 
-const launchOpts = process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' };
+// ★★ 2026-10-14 修（发版验收抓到的真 bug）：**新用户的 Windows 上只有 Edge，没有 Chrome** ✗
+//   原来写死 `{ channel: 'chrome' }` ⇒ 没装 Chrome 的用户**一渲染就失败**，
+//   而且报错是一句 playwright 的英文，用户根本不知道为什么 ✗
+//   ⇒ 现在按顺序找：CHROME_PATH（用户指定）→ Edge（Windows 自带）→ Chrome → playwright 自带的
+const WIN_BROWSERS = [
+  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+];
+function pickBrowser() {
+  const env = process.env.CHROME_PATH;
+  if (env) return { executablePath: env, how: `CHROME_PATH=${env}` };
+  const found = WIN_BROWSERS.find((p) => fs.existsSync(p));
+  if (found) return { executablePath: found, how: `自动找到 ${found}` };
+  // 都没找到：交给 playwright 的 channel（装了 Chrome 就能用；否则它会报错，我们下面给人话）
+  return { channel: 'chrome', how: 'playwright channel=chrome（没找到 Edge/Chrome 可执行文件）' };
+}
+const _b = pickBrowser();
+const launchOpts = _b.executablePath ? { executablePath: _b.executablePath } : { channel: _b.channel };
+if (process.env.MK_VERBOSE) console.error(`[render] 浏览器：${_b.how}`);
 const chromeArgs = [
   '--autoplay-policy=no-user-gesture-required',
   '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
@@ -74,7 +94,22 @@ function run(cmd, argv, stdio = ['ignore', 'ignore', 'inherit']) {
 }
 
 async function openPage() {
-  const browser = await chromium.launch({ ...launchOpts, args: chromeArgs });
+  // ★ 2026-10-14：起不来时给**人话**（原来是一句英文堆栈，用户不知道为什么 ✗）
+  let browser;
+  try {
+    browser = await chromium.launch({ ...launchOpts, args: chromeArgs });
+  } catch (e) {
+    console.error(
+      '\n[render] ✗ 起不了浏览器，渲不了画面。\n' +
+      `  试的是：${_b.how}\n` +
+      '  怎么办（任选一条）：\n' +
+      '    · 装了 Edge 就够（Windows 自带）—— 确认这个文件在：\n' +
+      '        C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\n' +
+      '    · 或者装了 Chrome 也行\n' +
+      '    · 装在别处 ⇒ 设环境变量 CHROME_PATH 指向那个 exe\n' +
+      `  原始报错：${String((e && e.message) || e).slice(0, 200)}\n`);
+    process.exit(3);
+  }
   const page = await browser.newPage();
   page.on('console', m => { if (m.type() === 'error') console.error('[page]', m.text()); });
   page.on('pageerror', e => console.error('[page]', e.message));

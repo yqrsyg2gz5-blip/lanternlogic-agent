@@ -79,3 +79,50 @@ export function providerForModel(model: string): string {
   if (model.startsWith('bonsai')) return 'bonsai';   // ★ 2026-10-10：本地 Bonsai 2（llama.cpp）
   return model; // 未知模型原样回传（后端按 model_name 落配置）
 }
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// ★★ 思考档位（2026-10-14 用户要求）
+//
+//   用户原话：「你把那个档位最好是用中文，别用英文……你可以关/低/中/高……
+//              假如说别的模型就两个档位，关中高……你就按人家模型建议来呗」
+//
+//   ★ 各家实测能认的值不同（2026-10-14 实打实发请求试的，不是查文档猜的）：
+//       MiMo：    none / low / medium / high  ✓   ｜ max ✗400
+//       DeepSeek：low / high / max            ✓   ｜ 无 medium
+//       本地：    只有 开/关
+//       其它：    **没这个参数** ⇒ 界面不显示这一栏（不许硬塞，网关会 400）✗
+//
+//   ⇒ 界面只显示**这个模型真正支持的档**，中文文案 ✓
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 统一四档（存的值就用这四个 —— 后端 _EFFORT_LEVELS 同口径） */
+export const EFFORT_LEVELS = ['off', 'low', 'medium', 'high'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/** 按服务商给中文文案（★ DeepSeek 的 high 实际是它最高的 max ⇒ 叫「最高」更准） */
+const EFFORT_ZH: Record<string, Record<string, string>> = {
+  mimo: { off: '关', low: '低', medium: '中', high: '高' },
+  deepseek: { off: '关', low: '低', medium: '中', high: '最高' },
+  local: { off: '关', high: '开' },
+};
+
+/** provider → 它支持哪几档（不写 = 不支持思考档位 ⇒ 界面不显示那一栏） */
+const EFFORT_SUPPORT: Record<string, EffortLevel[]> = {
+  mimo: ['off', 'low', 'medium', 'high'],
+  deepseek: ['off', 'low', 'medium', 'high'],
+  // 本地那几个 provider（bonsai / ollama 等）
+  bonsai: ['off', 'high'],
+  ollama: ['off', 'high'],
+};
+
+/** 这个 provision 支持哪几档？空数组 = 界面上不显示这一栏 */
+export function effortsFor(provider: string): EffortLevel[] {
+  return EFFORT_SUPPORT[provider] ?? [];
+}
+
+/** 档位的中文文案（该模型自己的说法） */
+export function effortLabel(provider: string, level: string): string {
+  const table = EFFORT_ZH[provider] ?? { off: '关', low: '低', medium: '中', high: '高' };
+  return table[level] ?? level;
+}

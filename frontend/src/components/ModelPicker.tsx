@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { SWITCHER_PRESETS, displayNameForModel } from '../modelPresets';
+import { SWITCHER_PRESETS, displayNameForModel, effortLabel, effortsFor } from '../modelPresets';
 
 /**
  * 统一的模型切换器（第 48 班：首页与任务页同款——用户反馈"为什么两处不一样"）。
@@ -68,6 +68,31 @@ export function ModelPicker({
   //   跑 Claude/Mock 时按钮上直接显示原始 id（claude-sonnet-4-20250514）。
   const display = displayNameForModel(modelName);
 
+  // ★★ 2026-10-14（用户要求）：**思考档位**就放在这个弹层里 ——
+  //   原话：「多麻烦，你能不能就在这个界面……点这个模型，然后左面或右面就出现一个
+  //          可以选项的那种……这个模型的思考方式，包括档位……根据模型来」
+  //   ⇒ 每个模型行下面显示**它自己支持的档**（不支持的不显示，不许硬塞 ✗）
+  const [effort, setEffort] = useState('');
+  const [savingEffort, setSavingEffort] = useState(false);
+
+  // 打开时读一次当前档位（后端 `reasoning_effort` 字段）
+  useEffect(() => {
+    if (!open) return;
+    void api.getSettings().then((s) => {
+      const m = (s as { model?: { reasoning_effort?: string } }).model;
+      setEffort(m?.reasoning_effort ?? '');
+    }).catch(() => undefined);
+  }, [open]);
+
+  const pickEffort = (level: string): void => {
+    setSavingEffort(true);
+    void api.setThinking(level)
+      .then(() => setEffort(level))
+      .catch(() => undefined)
+      .finally(() => setSavingEffort(false));
+    // ★ 不关弹层：用户可能还想接着改 ✓（与选模型不同）
+  };
+
   const pick = (model_name: string): void => {
     const p = SWITCHER_PRESETS.find((x) => x.model_name === model_name);
     if (!p) return;
@@ -104,16 +129,48 @@ export function ModelPicker({
       {open && (
         <div className="ctl-pop">
           {/* A5：清单来自共享表（SWITCHER_PRESETS）——不许在这里再写死一份 */}
-          {SWITCHER_PRESETS.map((p) => (
-            <button
-              key={p.model_name}
-              className={'ctl-item' + (p.model_name === modelName ? ' ctl-on' : '')}
-              onClick={() => pick(p.model_name)}
-            >
-              {p.label}
-              <span>{p.model_name}</span>
-            </button>
-          ))}
+          {SWITCHER_PRESETS.map((p) => {
+            // ★★ 2026-10-14：**这个模型支持哪几档思考**（空 = 不支持 ⇒ 不显示那一行）✓
+            const levels = effortsFor(p.provider);
+            const isCur = p.model_name === modelName;
+            return (
+              <div key={p.model_name} className="ctl-model-block">
+                <button
+                  className={'ctl-item' + (isCur ? ' ctl-on' : '')}
+                  onClick={() => pick(p.model_name)}
+                >
+                  {p.label}
+                  <span>{p.model_name}</span>
+                </button>
+                {/* ★ 思考档位：只给**当前选中**的模型显示（就是用户在调的那一个）✓ */}
+                {isCur && levels.length > 0 && (
+                  <div className="ctl-effort" role="group" aria-label="思考档位">
+                    <span className="ctl-effort-title">思考</span>
+                    {levels.map((lv) => (
+                      <button
+                        key={lv}
+                        className={'ctl-effort-btn' + (effort === lv ? ' ctl-on' : '')}
+                        disabled={savingEffort}
+                        title={
+                          lv === 'off'
+                            ? '关掉思考：快、省钱；简单活够用，硬活会变笨'
+                            : lv === 'high'
+                              ? '最高档：慢、贵；写代码/排错这类硬活靠它'
+                              : `思考强度：${effortLabel(p.provider, lv)}`
+                        }
+                        onClick={() => pickEffort(lv)}
+                      >
+                        {effortLabel(p.provider, lv)}
+                      </button>
+                    ))}
+                    {effort === '' && (
+                      <span className="ctl-effort-note">（默认）</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <div className="ctl-hint">更多模型/Key 配置在 设置 → 模型</div>
         </div>
       )}

@@ -168,6 +168,53 @@ if not exist "%~dp0frontend\dist\index.html" (
 echo   [OK] UI built
 :ui_done
 
+REM ============================================================================
+REM [4c/5] Renderer deps - the beat-synced video skill needs playwright-core
+REM         to render frames to MP4.
+REM
+REM FIX 2026-10-14 (a real shipping bug caught by the release acceptance run):
+REM   this step did NOT exist before.
+REM   - The published zip carries these deps (export_public.py FORCE_INCLUDE_DIRS)
+REM   - But a SOURCE CHECKOUT has neither dist/ nor node_modules/ (both
+REM     gitignored) => cloning the repo, running install.bat and then making a
+REM     beat-synced video failed with:
+REM       ERR_MODULE_NOT_FOUND: Cannot find package 'playwright-core'
+REM     i.e. the same bug as the zip had, on the source path.
+REM   - Install once here; skipped when the deps are already present.
+REM ============================================================================
+echo [4c/5] Install the video renderer's deps (playwright-core) ...
+REM NOTE: this .bat must stay pure ASCII, so we never hardcode the skill folder
+REM name (it is Chinese). We cd into skills\ and let `for /d` hand us each skill
+REM folder by name - that works with non-ASCII names, unlike wildcards mid-path.
+set "RENDER_FOUND="
+pushd "%~dp0backend\skills" 2>nul
+if errorlevel 1 goto :render_scan_done
+for /d %%D in (*) do (
+  if exist "%%D\tools\render\package.json" set "RENDER_FOUND=%CD%\%%D\tools\render"
+)
+popd
+:render_scan_done
+if not defined RENDER_FOUND (
+  echo   [!] video renderer not found - skipping
+  goto :render_done
+)
+if exist "%RENDER_FOUND%\node_modules\playwright-core\package.json" (
+  echo   [OK] renderer deps already present - skipped
+  goto :render_done
+)
+pushd "%RENDER_FOUND%"
+call npm install --no-audit --no-fund
+popd
+if not exist "%RENDER_FOUND%\node_modules\playwright-core\package.json" (
+  echo   [X] renderer deps failed - the video skill cannot render without them.
+  echo       Fix by hand: go to backend\skills\*\tools\render and run: npm install
+  echo       ^(Node.js 18+ required; the published zip already ships these deps^)
+  pause
+  exit /b 1
+)
+echo   [OK] renderer deps installed - the video skill can render
+:render_done
+
 echo [5/5] Install TTS (optional) ...
 "%~dp0backend\.venv\Scripts\python.exe" -m pip install edge-tts pyttsx3 -i "%PIP_INDEX_URL%" >nul 2>&1
 echo   [OK] TTS ready - MeloTTS upgrade script: see the scripts folder

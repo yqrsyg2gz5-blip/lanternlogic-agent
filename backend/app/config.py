@@ -68,6 +68,11 @@ class ModelCfg(_StrictModel):
     #   ★ 故意**不管**哪一处：**验收人的判定** ✗ ——
     #     它决定"能不能过" ✓ 用弱模型省下的钱，会以"该打回没打回"的形式几倍还回去 ✓。
     #     （这条写在这儿，免得将来有人"顺手"把它也接上 ✓）
+    # ★★ 2026-10-14（用户要求）：**思考档位** —— 界面给中文，各家翻译成自己认的值
+    #   取值："" = 不设（用服务商默认）· off / low / medium / high
+    #   实测：MiMo 认 none/low/medium/high；DeepSeek 认 low/high/max（无 medium）
+    #   ⇒ 界面上按模型显示不同档位，见 providers/openai_compat.py 的 supported_efforts()
+    reasoning_effort: str = ""
     simple_model: str = ""       # 例：填 "glm-5.3-flash" 或 "mimo-v2.6-flash"；空 = 不启用 ✓
 
 

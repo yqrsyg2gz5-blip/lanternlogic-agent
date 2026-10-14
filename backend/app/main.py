@@ -4665,6 +4665,9 @@ async def get_settings() -> dict[str, Any]:
             #   "花了多少钱看不见"✓）—— 结果**每保存一次就被悄悄清掉** ✗✗
             #   ⇒ 现在如实回传 ✓ 表单填得上、保存不再毁东西 ✓。
             "max_iterations": int(getattr(m, "max_iterations", 0) or 0),
+            # ★★ 2026-10-14：**思考档位也要回传** —— 与上面 max_iterations 同一个坑：
+            #   不回传 ⇒ 界面回填成空 ⇒ 用户一保存就把档位**静默清掉** ✗
+            "reasoning_effort": str(getattr(m, "reasoning_effort", "") or ""),
             # ★★ 2026-10-11（平台闸修复 ②）：**自动续跑也要回传** ✓ ——
             #   与上面 max_iterations / pricing 是**同一个形状的坑**（体检⑤ 抓到的 ✗）：
             #   不回传 ⇒ 界面回填成"关/默认"⇒ 用户一按保存就把自己开的自动续跑**静默关掉** ✗✓
@@ -4851,6 +4854,45 @@ class SettingsModelReq(BaseModel):
     #   服务商明确拒收（401/403）⇒ **拒绝保存**并说人话 ✓（网络不通不算 ✗ 照常保存 ✓）
     #   默认 False ⇒ 现有调用方与测试**行为完全不变** ✓
     verify_key: bool = False
+
+
+class SettingsThinkingReq(BaseModel):
+    """思考档位（2026-10-14 用户要求）—— 界面给中文，各家翻译成自己认的值。
+
+    取值口径（**统一四档**，与 providers/openai_compat.py 的 _EFFORT_LEVELS 一致）：
+        ""        不设（用服务商默认）
+        "off"     关（省钱、快；简单活够用）
+        "low"     低
+        "medium"  中
+        "high"    高 / 最高（硬活靠它）
+
+    ★ 各家实测能认的值不同，由 _EFFORT_MAP 翻译 —— 这里**只收统一口径**，
+      服务商专有值（none/medium/max…）**不许从这里进来** ✗
+    """
+    reasoning_effort: str = ""
+
+
+@app.post("/api/v1/settings/thinking")
+async def set_thinking(req: SettingsThinkingReq) -> dict[str, Any]:
+    """设思考档位（立即生效 + 落盘）。**不动模型，只动档位** ✓"""
+    from .providers.openai_compat import _EFFORT_LEVELS, supported_efforts
+
+    v = str(req.reasoning_effort or "").strip().lower()
+    if v and v not in _EFFORT_LEVELS:
+        raise HTTPException(
+            422, f"未知档位：{v!r}（可用：空 = 默认 · " + " / ".join(_EFFORT_LEVELS) + "）")
+    # ★ 服务商不支持的档位**要拒**，不许存进去（存了也是白发，还会让界面显示错）✗
+    if v:
+        ok_levels = supported_efforts(cfg.model.base_url or "")
+        if v not in ok_levels:
+            raise HTTPException(
+                422,
+                f"当前模型不支持「{_EFFORT_LEVELS.get(v, v)}」这一档"
+                f"（它支持：{' / '.join(_EFFORT_LEVELS.get(x, x) for x in ok_levels) or '无'}）")
+    cfg.model.reasoning_effort = v
+    _save_config()
+    return {"ok": True, "reasoning_effort": v,
+            "label": _EFFORT_LEVELS.get(v, "默认")}
 
 
 @app.post("/api/v1/settings/pricing/fetch")

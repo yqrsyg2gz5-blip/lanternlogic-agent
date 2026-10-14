@@ -64,6 +64,33 @@ def tracked() -> list[str]:
     return [f for f in out.decode("utf-8", "replace").split("\0") if f.strip()]
 
 
+#: ★★ 2026-10-14：**必须强制带上**的目录（被 .gitignore 排除、但发版包里非有不可）
+#
+#   为什么（发版验收抓到的真 bug，v0.1.0 / v0.1.1 都中招 ✗）：
+#     卡点视频的渲染器 `tools/render/render.mjs` 依赖 `playwright-core`，
+#     而 `node_modules/` 在 .gitignore 里 ⇒ `git ls-files` 看不到它 ⇒ **导不进发版包** ✗
+#     后果（实测复现）：用户下载解压后一渲染就
+#       `ERR_MODULE_NOT_FOUND: Cannot find package 'playwright-core'`
+#     ⇒ **核心功能（出视频）直接废掉**，而且报错完全指不到"包打漏了" ✗
+#   实测体积：playwright-core 约 13 MB（119 个文件）——很值，换核心功能可用 ✓
+FORCE_INCLUDE_DIRS = (
+    "backend/skills/卡点视频/tools/render/node_modules",
+)
+
+
+def forced_files() -> list[str]:
+    """强制带上目录里的全部文件（相对仓库根、posix 风格）✓"""
+    got: list[str] = []
+    for d in FORCE_INCLUDE_DIRS:
+        base = ROOT / d
+        if not base.is_dir():
+            continue
+        for p in sorted(base.rglob("*")):
+            if p.is_file():
+                got.append(p.relative_to(ROOT).as_posix())
+    return got
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="导出可上传的干净副本")
     ap.add_argument("--out", required=True, help="目标目录（不存在则创建 ✓ 已存在且非空则拒绝 ✗）")
@@ -88,6 +115,20 @@ def main() -> int:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         kept.append(f)
+
+    # ★★ 强制带上被 .gitignore 排除、但运行时非有不可的目录（渲染器的 playwright-core ✓）
+    forced = forced_files()
+    n_forced = 0
+    for f in forced:
+        src = ROOT / f
+        dst = out / f
+        if dst.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        n_forced += 1
+    if n_forced:
+        _out(f"  ★ 强制带上 {n_forced} 个运行时依赖文件（渲染器 node_modules ✓）")
 
     (out / "EXPORT-README.txt").write_text(
         "这份副本由 scripts/export_public.py 导出 ✓\n"
