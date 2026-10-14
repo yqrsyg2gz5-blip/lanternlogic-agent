@@ -54,16 +54,65 @@ def test_running_the_protected_interpreter_does_not_trigger_the_hard_wall():
     硬保护只该在"**破坏性动词 + 受保护路径**同时出现"时拦 —— 光是调用解释器不算。
 
     （注意：调用工作区之外的路径**另有**一条更早就存在的规则会问一次 ✓ 那是原行为，不是这道墙。）
+
+    ★★ 2026-10-14 修（用户跑干净 checkout 时抓到，本文件原写法**换台机器必红** ✗）：
+       原来拿 `sys.executable` 当"受保护路径" —— 那**只在"跑测试的 Python 恰好在
+       本仓 backend\\.venv 里"时才成立** ✓（开发机上正是这样，所以一直绿）。
+       别人机器上 Python 可能装在 `C:\\Python313\\` ⇒ 那个路径**根本不在受保护清单里**
+       ⇒ 硬保护不该触发 ⇒ 返回 `allow_all`（因为测试开了"全部允许"）⇒ 断言红 ✗
+       **实测复现**：干净 clone 里跑单条即失败（用户就是这么撞上的）。
+
+       ⇒ 现在**显式取一个真受保护路径**（`_protected_dirs()` 里的），
+         不再依赖解释器装在哪 ✓ —— 这才是这条测试真正想验的东西。
     """
-    import sys
+    import sys  # noqa: F401  （保留：说明本测试曾依赖它）
+    am = ApprovalManager()
+    prot = [str(d) for d in am._protected_dirs()]
+    assert prot, "受保护目录清单是空的 ⇒ 硬保护形同虚设 ✗"
+
+    # ① 解释器**能被调用**（用真解释器，不要求它在受保护清单里）
     py = str(sys.executable)
     for cmd in (f'"{py}" todo.py add 买牛奶', f'cd /w && "{py}" -m unittest test_todo -v'):
         v = _check(cmd, allow_all=True)
         assert v is None or "应用自身的目录" not in (v.reason or ""), (cmd, v)
-    # 但"删/移/写"到受保护路径 ⇒ 必须被这道墙拦下（开了全部允许也不行）
-    for bad in (f'rm -f "{py}"', f'del "{py}"', f'move "{py}" /tmp/x', f'cp evil.exe "{py}"'):
+
+    # ② "删/移/写"到**真受保护路径** ⇒ 必须被这道墙拦下（开了全部允许也不行）
+    target = prot[0]
+    for bad in (f'rm -f "{target}/x.py"', f'del "{target}\\x.py"',
+                f'move "{target}/x.py" /tmp/x', f'cp evil.exe "{target}/x.py"'):
         v = _check(bad, allow_all=True)
-        assert v is not None and v.action == "ask", (bad, v)
+        assert v is not None and v.action == "ask", (
+            f"「全部允许」绕过了硬保护 ⇒ 能删掉应用自己的目录 ✗\n  {bad}\n  {v}"
+        )
+        assert "应用自身的目录" in (v.reason or ""), (
+            f"拦是拦了，但不是硬保护拦的（原因不对）✗\n  {v.reason!r}"
+        )
+
+
+def test_hard_wall_is_checked_before_allow_all_in_the_source():
+    """★★ 顺序锚点：硬保护必须**排在「本任务全部允许」之前** ✓
+
+    为什么单独立一条（而不是只靠上面那条行为测试）：
+      · 行为测试需要"命令里出现一个真受保护路径"才成立 —— 构造得对才有效 ✓
+      · 顺序一旦被谁改反（把 `if task_id in self._allow_all` 挪到 `_protected_hit` 前面），
+        行为测试**可能仍然绿**（取决于构造），但**洞已经开了**：
+        "全部允许" → 删掉应用自己的 .venv ✗
+      ⇒ 这条直接盯源码顺序，改反了就红 ✓
+
+    真机背景：2026-10-14 有人的干净 checkout 上这条行为测试红了，
+    但根因是**测试依赖解释器位置**，不是顺序错 —— 顺序本身是对的 ✓
+    给它加个锚点，免得以后真被改反了没人发现。
+    """
+    src = (pathlib.Path(__file__).resolve().parents[1] / "app" / "approval.py").read_text(
+        "utf-8", errors="replace")
+    i_prot = src.find("protected = self._protected_hit(command, is_inside)")
+    i_allow = src.find("if task_id in self._allow_all:")
+    assert i_prot > 0, "找不到硬保护调用 ⇒ 顺序无从谈起 ✗"
+    assert i_allow > 0, "找不到「本任务全部允许」判断 ⇒ 顺序无从谈起 ✗"
+    assert i_prot < i_allow, (
+        "「本任务全部允许」排到了硬保护**前面** ⇒ 开了全部允许就能删掉应用自己的目录 ✗\n"
+        "  （硬保护必须先在前面判，连 allow_all 也不豁免）"
+    )
 
 
 def test_interpreter_can_be_run_but_not_deleted():

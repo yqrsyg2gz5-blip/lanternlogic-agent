@@ -55,20 +55,40 @@ def test_every_declared_renderer_dependency_is_force_included():
     """★ 渲染器 `package.json` 声明的依赖，必须**每个**都在强制带入清单里。
 
     声明了却不带 ⇒ 用户解压后 `ERR_MODULE_NOT_FOUND`（实测 v0.1.0/v0.1.1 都这样）✗
+
+    ★★ 2026-10-14 修（用户跑干净 checkout 时抓到）：
+       这条测试原来还断言 `node_modules` **必须已存在** —— 那是**错的** ✗
+       `node_modules` 在 `.gitignore` 里 ⇒ **任何干净 checkout（含从 GitHub/Gitee clone）
+       都必然没有它** ⇒ 这条断言在别人机器上**必然红** ✗
+       （真机复现：用户在 `D:\\a\\lanternlogic-agent\\...` 跑 pytest ⇒ 这一条 F）
+
+       正确的口径是「**要么本来就有，要么装得回来**」：
+         · 发版 zip：靠 `export_public.py` 的强制带入清单 → 一定有 ✓
+         · 源码 clone：靠 `install.bat` 的 `[4c/5]` 步 npm install → 装得回来 ✓
+       ⇒ 所以这里只断言「声明 ⟺ 强制带入清单 ⟺ install.bat 会装」三者一致 ✓
     """
     pkg = json.loads((RENDER / "package.json").read_text("utf-8"))
     deps = list((pkg.get("dependencies") or {}))
     assert deps, "渲染器没有声明依赖？那这条测试失去意义，检查 package.json ✗"
+
     src = (ROOT / "scripts" / "export_public.py").read_text("utf-8")
     for d in deps:
         assert d in src, (
             f"渲染器依赖 {d!r} 没在 export_public.py 的强制带入清单里 ⇒ "
             f"发版包会缺它 ⇒ 用户渲不了视频 ✗"
         )
-    # 目录得真的在
-    assert (RENDER / "node_modules").is_dir(), (
-        "渲染器的 node_modules 不在 ⇒ 本地都跑不了，先 npm i 再发版 ✗"
+
+    # ★ 源码路径：install.bat 必须会装（否则干净 checkout 永远跑不了渲染）✓
+    inst = (ROOT / "install.bat").read_text("ascii", "replace")
+    assert "npm install" in inst and "tools\\render" in inst, (
+        "install.bat 不装渲染器依赖 ⇒ 干净 checkout（node_modules 被 .gitignore 排除）"
+        "永远跑不了渲染 ✗"
     )
+
+    # ★ 有就顺便验一下真的是它（没有不算失败 —— 干净 checkout 本来就没有）✓
+    nm = RENDER / "node_modules" / deps[0]
+    if nm.is_dir():
+        assert (nm / "package.json").exists(), f"node_modules/{deps[0]} 装坏了 ✗"
 
 
 def test_renderer_does_not_hardcode_chrome_channel():
